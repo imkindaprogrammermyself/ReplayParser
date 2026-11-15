@@ -638,7 +638,10 @@ function v3Build() {
   sun.position.set(400, 700, 250); scene.add(sun);
 
   const water = new THREE.Mesh(new THREE.PlaneGeometry(size * 6, size * 6),
-    new THREE.MeshStandardMaterial({ color: 0x14406a, roughness: .55, metalness: .15 }));
+    new THREE.MeshStandardMaterial({ color: 0x14406a, roughness: .55, metalness: .15, transparent: true, opacity: .72 }));
+  // see-through water drawn after the hulls, so dived submarines show beneath it; things that
+  // don't write depth (smoke, zone discs, ghost hulls) use renderOrder 2 to draw after the water
+  water.renderOrder = 1;
   water.rotation.x = -Math.PI / 2; water.position.copy(V3.center); scene.add(water);
   if (D.map && D.map.terrain) scene.add(v3Terrain(D.map.terrain));
   const cells = 2 * Math.ceil(size / 200);   // 100 u grid, aligned to multiples of 100
@@ -917,6 +920,7 @@ function v3Zone(z) {
   const wall = new THREE.Mesh(new THREE.CylinderGeometry(r, r, 8, 64, 1, true), wallMat); wall.position.set(x, 4, zz);
   const progMat = new THREE.MeshBasicMaterial({ side: THREE.DoubleSide });
   const prog = flat(new THREE.Mesh(new THREE.BufferGeometry(), progMat)); prog.position.set(x, .45, zz);
+  disc.renderOrder = wall.renderOrder = 2;
   V3.scene.add(disc, ring, wall, prog);
   const el = document.createElement('div');
   el.className = 'lbl zone';
@@ -958,6 +962,7 @@ function v3Update() {
     o.hullMat.color.copy(col); o.topMat.color.copy(col).lerp(V3.dark, .45);
     o.hullMat.opacity = o.topMat.opacity = st.ghost ? .25 : 1;
     o.hullMat.depthWrite = o.topMat.depthWrite = !st.ghost;
+    if (o.ghostRO !== !!st.ghost) { o.ghostRO = !!st.ghost; o.g.traverse(m => { m.renderOrder = st.ghost ? 2 : 0; }); }
 
     // trail: last TRAIL seconds of real positions
     const tr = D.tracks[s.id];
@@ -1072,7 +1077,7 @@ function v3Events() {
       if (!pts) continue;
       for (let i = 0; i < pts.length; i += 2, n++) {
         let m = V3.smokePool[n];
-        if (!m) { m = V3.smokePool[n] = new THREE.Mesh(V3.smokeGeo, V3.smokeMat); V3.scene.add(m); }
+        if (!m) { m = V3.smokePool[n] = new THREE.Mesh(V3.smokeGeo, V3.smokeMat); m.renderOrder = 2; V3.scene.add(m); }
         m.visible = true; m.position.set(pts[i], 2.5, -pts[i + 1]); m.scale.set(sm.radius, 5, sm.radius);
       }
     }
