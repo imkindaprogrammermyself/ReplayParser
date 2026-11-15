@@ -112,6 +112,20 @@ class ReplayTests(unittest.TestCase):
                 for sm in d['smokes']:
                     self.assertTrue(all(len(f[1]) % 2 == 0 for f in sm['frames']))
 
+    def test_shell_flights(self):
+        """Shells end where receiveShotKills says; ones that land where aimed took ~0.363 x serverTimeLeft."""
+        import statistics
+        for r, d in self.each():
+            with self.subTest(replay=os.path.basename(r)):
+                ended = [s for s in d['shots'] if s[9] is not None]
+                self.assertGreater(len(ended), .25 * len(d['shots']))
+                for s in ended:
+                    self.assertAlmostEqual(s[9] - s[0], s[6], delta=.06)
+                    self.assertTrue(0 < s[6] < 60, s[6])
+                aimed = [s for s in ended if math.hypot(s[10] - s[4], s[11] - s[5]) < 3]
+                self.assertLess(statistics.median(math.hypot(s[10] - s[4], s[11] - s[5]) for s in ended), 10)
+                self.assertGreater(len(aimed), 100)
+
     def test_torpedo_ends(self):
         """Torpedoes end where receiveShotKills says; straight ones end on their launch line."""
         for r, d in self.each():

@@ -21,6 +21,7 @@ AIM_RANGE_STEP = 5.92         # targetLocalPos high byte -> world units (median 
 # serverSpeedRaw per knot of displayed speed, approximate (+-3%): maxServerSpeedRaw is ~26250 x base knots and
 # ~5050 x the serverSpeedRaw of ships running at that cap (Thunderer replay), so 26250 / 5050 ~ 5.2
 SPEED_RAW_PER_KNOT = 5.2
+SHELL_TIME_FACTOR = 0.363     # real shell flight time / SHOT.serverTimeLeft
 RUDDER_FULL = math.pi / 6     # ruddersAngle at full rudder (values seen: 0, +-pi/12, +-pi/6, ...)
 
 
@@ -99,7 +100,8 @@ class TimelineBuilder:
         self.view_mode = []                # [t, mode]
         self.target_lock = []              # [t, vid or 0]
         self.controls = []                 # [t, kind, level]
-        self.shots = []                    # [t, owner, x0, z0, x1, z1, flight_s, gun, pitch_rad]
+        self.shots = []                    # [t, owner, x0, z0, x1, z1, flight_s (real), gun, pitch_rad,
+                                           #  end_t, end_x, end_z, end_hitType]  (end from receiveShotKills, else None)
         # [t, owner, x, z, dirx, dirz, end_t, end_x, end_z, end_hitType, path]: dir is per second; end from
         # receiveShotKills (None if never seen); path = [[t, x, z]] course points of maneuvering / homing torpedoes
         self.torpedoes = []
@@ -114,6 +116,7 @@ class TimelineBuilder:
         self.speed = defaultdict(list)     # vid -> [t, knots]  (serverSpeedRaw / SPEED_RAW_PER_KNOT, < 0 astern)
         self.rudder = defaultdict(list)    # vid -> [t, rudder -1..1]  (ruddersAngle / 30 deg, + = starboard)
         self._torp = {}                    # (owner, shotID) -> torpedo row still running
+        self._shot = {}                    # (owner, shotID) -> shell row in flight (ids never clash with torps)
         self.chat = []                     # [t, sender, channel, text]
         self.consumables = []              # [t, vid, label, duration_s, range | None]
         self.smokes = {}                   # smoke entity -> {radius, frames: [[t, [x, z, ...]]], end}
@@ -351,11 +354,15 @@ class TimelineBuilder:
         for pack in a[0]:
             for s in pack['shots']:
                 (x0, _, z0), (x1, _, z1) = s['pos'], s['tarPos']
-                flight = s['serverTimeLeft'] if s['serverTimeLeft'] > 0 else 2.0
+                # serverTimeLeft is not seconds: shells that land where aimed take 0.363 x it (median of ~2000
+                # flights over 3 replays, 0.362-0.363 each); replaced by the real time when the impact arrives
+                flight = s['serverTimeLeft'] * SHELL_TIME_FACTOR if s['serverTimeLeft'] > 0 else 1.0
                 # gunBarrelID: 0x8000 = secondary (ATBA), & 31 = gun index (HP_xxx_<n> - 1), >> 5 = barrel
                 gun = s.get('gunBarrelID', 0) & 0x801F
-                self.shots.append([_r(t), pack['ownerID'], _r(x0), _r(z0), _r(x1), _r(z1), _r(flight),
-                                   gun, _r(s.get('pitch', 0.0), 3)])
+                row = [_r(t), pack['ownerID'], _r(x0), _r(z0), _r(x1), _r(z1), _r(flight),
+                       gun, _r(s.get('pitch', 0.0), 3), None, None, None, None]
+                self.shots.append(row)
+                self._shot[(pack['ownerID'], s['shotID'])] = row
 
     def _smoke_frame(self, t, eid):
         pts = [v for x, _y, z in self.values[eid].get('points') or () for v in (_r(x), _r(z))]
@@ -412,6 +419,10 @@ class TimelineBuilder:
                 row = self._torp.pop((pack['ownerID'], k['shotID']), None)
                 if row:
                     row[6:10] = [_r(t), _r(x), _r(z), pack['hitType']]
+                row = self._shot.pop((pack['ownerID'], k['shotID']), None)
+                if row:   # where the shell really ended (island, ship, water) - ~40% of shells get one
+                    row[9:13] = [_r(t), _r(x), _r(z), pack['hitType']]
+                    row[6] = _r(max(.05, t - row[0]))
 
     def m_Avatar_receiveExplosions(self, t, a):
         for e in a[0]:

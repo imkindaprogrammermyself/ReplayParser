@@ -821,17 +821,28 @@ function drawPlanes(ctx) {
 const depthAt = id => D.depth && D.depth[id] ? valAt(D.depth[id], t, [0, 0])[1] : 0;
 const kfmt = v => v >= 1000 ? `${(v / 1000).toFixed(v >= 100000 ? 0 : 1)}k` : `${v}`;
 
+// shells: [t, owner, x0, z0, x1, z1, flight_s, gun, pitch, endT, endX, endZ, endHit]. A shell flies to where it
+// really ended (receiveShotKills) or else to its aim point; the dotted line is the rest of its path.
+const shellEnd = r => r[9] != null ? [r[10], r[11]] : [r[4], r[5]];
+// height along the path (q = 0..1 of the ground distance): rises at the recorded launch pitch, falls a bit steeper
+// (drag), so the apex sits just past the middle. Approximate - the replay has the launch angle, not the curve.
+const SHELL_FALL = .8;
+function shellHeight(r, d, q) {
+  const tan = Math.tan(Math.max(.01, r[8] || 0));
+  return d * tan * q * Math.pow(1 - q, SHELL_FALL) + 1;
+}
 function drawShells(ctx) {
-  const sh = D.shots;
+  const sh = D.shots, sel = aimShip();
+  ctx.lineWidth = 1;
   for (let i = Math.max(0, idxAt(sh, t - SHOT_LIFE_MAX)); i < sh.length && sh[i][0] <= t; i++) {
-    const [t0, owner, xa, za, xb, zb, flight] = sh[i];
-    const f = (t - t0) / Math.min(flight, SHOT_LIFE_MAX);
+    const r = sh[i], [t0, owner, xa, za] = r, f = (t - t0) / Math.min(r[6], SHOT_LIFE_MAX);
     if (f < 0 || f > 1) continue;
-    const col = colorOf(byId[owner]);
-    ctx.strokeStyle = col; ctx.globalAlpha = .12; ctx.lineWidth = 1;
-    ctx.beginPath(); ctx.moveTo(sx(xa), sy(za)); ctx.lineTo(sx(xb), sy(zb)); ctx.stroke();
-    ctx.globalAlpha = .9; ctx.fillStyle = col;
-    ctx.beginPath(); ctx.arc(sx(xa + (xb - xa) * f), sy(za + (zb - za) * f), 1.8, 0, Math.PI * 2); ctx.fill();
+    const [xb, zb] = shellEnd(r), col = colorOf(byId[owner]), mine = sel && owner === sel.id;
+    const X = sx(xa + (xb - xa) * f), Y = sy(za + (zb - za) * f);
+    ctx.strokeStyle = col; ctx.globalAlpha = mine ? .75 : .3; ctx.setLineDash([1.5, 3]);
+    ctx.beginPath(); ctx.moveTo(X, Y); ctx.lineTo(sx(xb), sy(zb)); ctx.stroke();
+    ctx.setLineDash([]); ctx.globalAlpha = .9; ctx.fillStyle = col;
+    ctx.beginPath(); ctx.arc(X, Y, 1.8, 0, Math.PI * 2); ctx.fill();
   }
   ctx.globalAlpha = 1;
 }
@@ -1138,7 +1149,6 @@ function updateSide() {
 const has3D = typeof THREE !== 'undefined';
 const SHIP_LEN = { Destroyer: 4, Cruiser: 6.5, Battleship: 8.5, AirCarrier: 8.5, Submarine: 3.5 };  // world units (~30 m)
 const TURRETS = { Destroyer: [.3, -.32], Cruiser: [.32, .2, -.3], Battleship: [.33, .21, -.22, -.34] };
-const SHELL_ARC = .12;   // apex height as a fraction of range: a guess, not from the replay
 const V3 = { active: false, built: false, mode: 'orbit', scale: 1, w: 0, h: 0 };
 const orbit = { yaw: 0, pitch: .85, dist: 900, target: null, drag: null };
 
@@ -1184,6 +1194,7 @@ function v3Build() {
   V3.ships = Object.fromEntries(ships.map(s => [s.id, v3Ship(s)]));
   V3.zones = D.zones.map(v3Zone);
   V3.shellPts = v3Dyn(THREE.Points, 3000, new THREE.PointsMaterial({ size: 3, vertexColors: true, sizeAttenuation: false }));
+  V3.shellPath = v3Dyn(THREE.Points, 8000, new THREE.PointsMaterial({ size: 2, vertexColors: true, sizeAttenuation: false, transparent: true, opacity: .7 }));
   V3.shellTails = v3Dyn(THREE.LineSegments, 6000, new THREE.LineBasicMaterial({ vertexColors: true, transparent: true, opacity: .55 }));
   V3.torpPts = v3Dyn(THREE.Points, 400, new THREE.PointsMaterial({ size: 4, vertexColors: true, sizeAttenuation: false }));
   V3.torpWakes = v3Dyn(THREE.LineSegments, 4000, new THREE.LineBasicMaterial({ vertexColors: true, transparent: true, opacity: .6 }));
@@ -1582,18 +1593,21 @@ function v3Update() {
   }
 
   const relCol = id => V3.col[byId[id] ? byId[id].relation : 'neutral'];
-  for (const o of [V3.shellPts, V3.shellTails, V3.torpPts, V3.torpWakes, V3.camLine]) v3Begin(o);
+  for (const o of [V3.shellPts, V3.shellTails, V3.shellPath, V3.torpPts, V3.torpWakes, V3.camLine]) v3Begin(o);
   if (opts.shells) {
     const sh = D.shots;
     for (let i = Math.max(0, idxAt(sh, t - SHOT_LIFE_MAX)); i < sh.length && sh[i][0] <= t; i++) {
-      const [t0, owner, xa, za, xb, zb, flight] = sh[i];
-      const f = (t - t0) / Math.min(flight, SHOT_LIFE_MAX);
+      const r = sh[i], [t0, owner, xa, za] = r, f = (t - t0) / Math.min(r[6], SHOT_LIFE_MAX);
       if (f < 0 || f > 1) continue;
-      const apex = Math.hypot(xb - xa, zb - za) * SHELL_ARC, col = relCol(owner);
-      const at = q => [xa + (xb - xa) * q, 4 * apex * q * (1 - q) + 1, -(za + (zb - za) * q)];
+      const [xb, zb] = shellEnd(r), d = Math.hypot(xb - xa, zb - za), col = relCol(owner);
+      const at = q => [xa + (xb - xa) * q, shellHeight(r, d, q), -(za + (zb - za) * q)];
       const p = at(f), q = at(Math.max(0, f - .05));
       v3Add(V3.shellPts, ...p, col);
       v3Add(V3.shellTails, ...q, col); v3Add(V3.shellTails, ...p, col);
+      for (let k = 1; k <= 14; k++) {   // dotted rest of the path
+        const u = f + (1 - f) * k / 14;
+        v3Add(V3.shellPath, ...at(u), col);
+      }
     }
   }
   if (opts.torps) {
@@ -1611,7 +1625,7 @@ function v3Update() {
     v3Add(V3.camLine, cx, cy, -cz, V3.col.self);
     v3Add(V3.camLine, cx + dx * reach, cy + dy * reach, -(cz + dz * reach), V3.col.self);
   }
-  for (const o of [V3.shellPts, V3.shellTails, V3.torpPts, V3.torpWakes, V3.camLine]) v3End(o);
+  for (const o of [V3.shellPts, V3.shellTails, V3.shellPath, V3.torpPts, V3.torpWakes, V3.camLine]) v3End(o);
   v3Events();
 }
 
