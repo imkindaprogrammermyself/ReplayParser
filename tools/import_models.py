@@ -229,7 +229,31 @@ def ship_layout(gp_ship, b: Builder):
         mounted[hp] = (vis, w)
         parts.append((vis, w, kind, hp))
     ship_layout.sectors = sectors
+    ship_layout.fires = fire_points(hull, frames, b)
     return parts, missing
+
+
+def fire_points(hull, frames, b: Builder):
+    """Viewer-space [x, y, z] of the hull's 4 burn nodes (None where missing).
+
+    GameParams hull effects 'fire1'..'fire4' list the effect points each burn node lights (first = the main
+    flame); burningFlags bit i is fire i + 1 (checked: the shell that starts bit 0..3 lands bow -> stern).
+    The points live in <section>_ep.skel_ext, relative to the section placed by the main visual's HP_<section>."""
+    eps = {}
+    for vis, w in frames:
+        try:
+            ext = b.A.skel_ext(vis[:-len('.visual')] + '_ep.skel_ext')
+        except KeyError:
+            continue
+        for name, m in ext.items():
+            eps.setdefault(name, (m @ w)[3, :3])
+    effects = S(hull.get('effects')) or {}
+    out = []
+    for i in range(1, 5):
+        names = [e[0] for e in (S(effects.get(f'fire{i}')) or ()) if e] or [f'EP_Fire_{i}']
+        pos = next((eps[n] for n in names if n in eps), None)
+        out.append(None if pos is None else [round(float(pos[0]), 3), round(float(pos[1]), 3), round(-float(pos[2]), 3)])
+    return out
 
 
 def main(argv):
@@ -290,7 +314,8 @@ def main(argv):
             out_parts.append(part)
         total = sum(b.tris(v, lod) for v, *_ in parts)
         with open(os.path.join(OUT, key + '.json'), 'w') as f:
-            json.dump({'ship': key, 'lod': lod, 'meshes': meshes, 'parts': out_parts}, f, separators=(',', ':'))
+            json.dump({'ship': key, 'lod': lod, 'meshes': meshes, 'parts': out_parts, 'fires': ship_layout.fires},
+                      f, separators=(',', ':'))
         print(f'{key}: {len(out_parts)} parts, {len(meshes)} meshes, LOD {lod}, {total} tris'
               + (f', unplaced: {missing}' if missing else ''))
     if b.mixed_bones:

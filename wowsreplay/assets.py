@@ -15,6 +15,9 @@ Visual record (112 B, pointers relative to the record):
 Render set (40 B): u32 name id, u32, u32 vertex mapping id, u32 index mapping id, u64 material path id,
   u8, u8 n_nodes, 6 pad, ptr node name ids
 LOD (16 B): f32 extent, u8 casts shadow, u8, u16 n_render_sets, u32 ptr render-set name ids (u32 each)
+Skeleton extension record (32 B, db2, pointers relative to the record): u16, u16 n, u32, ptr name_ids[u32 n],
+  ptr parent name ids[u32 n], ptr matrices[16 f32 n]. <hull section>_ep.skel_ext holds the section's effect
+  points (EP_Fire_1, EP_Flood_steam_1, ...) relative to that section's origin.
 """
 import struct
 from typing import Dict, List, NamedTuple, Optional
@@ -128,6 +131,21 @@ class Assets:
         return None
 
     # ---------------------------------------------------------------- visuals
+
+    def skel_ext(self, path: str) -> Dict[str, np.ndarray]:
+        """Node name -> local 4x4 (row-vector) of a .skel_ext, e.g. a hull section's _ep effect points."""
+        pid = self.path_id(path)
+        res = pid is not None and self.resource(pid)
+        if not res or res[0] != 2:
+            raise KeyError(f'no skel_ext for {path}')
+        base, _count = self.db[2]
+        r = base + 0x20 * res[1]
+        d = self.d
+        n, = struct.unpack_from('<H', d, r + 2)
+        pn, _pp, pm = struct.unpack_from('<3Q', d, r + 8)
+        names = [self.string(x) or f'#{x:08x}' for x in struct.unpack_from(f'<{n}I', d, r + pn)]
+        return {nm: np.array(struct.unpack_from('<16f', d, r + pm + 64 * i), np.float64).reshape(4, 4)
+                for i, nm in enumerate(names)}
 
     def visual(self, path: str) -> Visual:
         pid = self.path_id(path)

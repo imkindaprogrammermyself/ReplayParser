@@ -742,8 +742,10 @@ function v3Build() {
   V3.col = Object.fromEntries(Object.entries(COLORS).map(([k, v]) => [k, new THREE.Color(v)]));
   V3.dead = new THREE.Color(0x56606e); V3.dark = new THREE.Color(0x1a1a1a);
   V3.labels = document.getElementById('labels');
-  V3.fireGeo = new THREE.SphereGeometry(1, 10, 8);
-  V3.fireMat = new THREE.MeshBasicMaterial({ color: 0xfb923c });
+  V3.fireGeo = new THREE.ConeGeometry(.5, 1.6, 10, 1, true).translate(0, .8, 0);   // flame: base at the origin
+  V3.fireCoreGeo = new THREE.ConeGeometry(.28, .9, 8, 1, true).translate(0, .45, 0);
+  V3.fireMat = new THREE.MeshBasicMaterial({ color: 0xf97316, transparent: true, opacity: .92, side: THREE.DoubleSide, depthWrite: false });
+  V3.fireCoreMat = new THREE.MeshBasicMaterial({ color: 0xfde047, side: THREE.DoubleSide });
   V3.floodMat = new THREE.MeshBasicMaterial({ color: 0x38bdf8, transparent: true, opacity: .6, side: THREE.DoubleSide });
   V3.floodGeo = new THREE.RingGeometry(.93, 1, 48);
   V3.ships = Object.fromEntries(ships.map(s => [s.id, v3Ship(s)]));
@@ -941,8 +943,17 @@ function v3Ship(s) {
       }
     }
   }
-  const fire = new THREE.Mesh(V3.fireGeo, V3.fireMat);   // shown while any section burns
-  fire.position.set(0, H * 3, 0); fire.visible = false; g.add(fire);
+  // one flame per burn node, at the hull's EP_Fire_<i+1> effect point (burningFlags bit i); without model
+  // data, spread bow (-z) to stern. Sized from the hull length.
+  const fires = [0, 1, 2, 3].map(i => {
+    const p = model && model.fires && model.fires[i] || [0, H * (i === 1 ? 1.6 : 1), L * (-.36 + .24 * i)];
+    const f = new THREE.Group();
+    f.add(new THREE.Mesh(V3.fireGeo, V3.fireMat), new THREE.Mesh(V3.fireCoreGeo, V3.fireCoreMat));
+    f.children[0].renderOrder = 2;
+    f.position.set(p[0], p[1], p[2]); f.visible = false; f.size = Math.max(.45, L * .06);
+    g.add(f);
+    return f;
+  });
   const flood = new THREE.Mesh(V3.floodGeo, V3.floodMat);   // waterline ring while any section floods
   flood.rotation.x = -Math.PI / 2; flood.position.y = .2; flood.visible = false; g.add(flood);
   V3.scene.add(g);
@@ -954,7 +965,7 @@ function v3Ship(s) {
   el.className = 'lbl';
   el.innerHTML = `<span style="color:${colorOf(s)}">${esc(s.name)}</span><i><b></b></i>`;
   V3.labels.appendChild(el);
-  return { s, g, hullMat, topMat, base, trail, el, bar: el.querySelector('b'), H, L, turrets, fire, flood, rings: {} };
+  return { s, g, hullMat, topMat, base, trail, el, bar: el.querySelector('b'), H, L, turrets, fires, flood, rings: {} };
 }
 
 // Gun mounts.
@@ -1048,9 +1059,14 @@ function v3Update() {
     o.g.position.set(st.x, y, -st.z);
     o.g.rotation.set(0, -st.yaw, list);
     if (o.turrets && o.turrets.length && !st.dead) v3AimTurrets(o, st, scale);
-    const nFire = opts.fires && !st.dead && !st.ghost ? fireCount(s.id) : 0;
-    o.fire.visible = nFire > 0;
-    if (nFire) o.fire.scale.setScalar(o.H * (.5 + .2 * nFire) * (1 + .15 * Math.sin(performance.now() / 90)));
+    const burning = opts.fires && !st.dead && !st.ghost ? burnFlags(s.id) & 0xf : 0, now = performance.now();
+    o.fires.forEach((f, i) => {
+      f.visible = !!(burning >> i & 1);
+      if (f.visible) {   // flicker, out of phase per node
+        const k = f.size;
+        f.scale.set(k * (1 + .12 * Math.sin(now / 53 + i * 2.1)), k * (1 + .3 * Math.sin(now / 71 + i * 1.3)), k * (1 + .12 * Math.cos(now / 61 + i)));
+      }
+    });
     const nFlood = opts.floods && !st.dead && !st.ghost ? floodCount(s.id) : 0;
     o.flood.visible = nFlood > 0;   // pulsing ring around the hull, wider with two floods
     if (nFlood) o.flood.scale.setScalar(o.L * (.45 + .15 * nFlood) * (1 + .08 * Math.sin(performance.now() / 160)));

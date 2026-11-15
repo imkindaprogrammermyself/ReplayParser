@@ -25,6 +25,26 @@ def timeline(path):
     return _cache[path]
 
 
+MODELS = sorted(glob.glob(os.path.join(ROOT, 'wowsreplay', 'data', 'models', '*.json')))
+
+
+@unittest.skipUnless(MODELS, 'no imported ship models')
+class ModelTests(unittest.TestCase):
+    def test_fire_points_bow_to_stern(self):
+        """EP_Fire_1..4 (burningFlags bits 0..3) run bow (-z in viewer space) to stern on 4-node hulls."""
+        import json
+        for path in MODELS:
+            with self.subTest(model=os.path.basename(path)):
+                with open(path, encoding='utf-8') as f:
+                    fires = json.load(f).get('fires')
+                self.assertIsNotNone(fires, 're-run tools/import_models.py')
+                pts = [p for p in fires if p]
+                self.assertTrue(pts)
+                if len(pts) == 4:
+                    zs = [p[2] for p in pts]
+                    self.assertEqual(zs, sorted(zs), zs)
+
+
 @unittest.skipUnless(REPLAYS, 'no replays in the project folder')
 class ReplayTests(unittest.TestCase):
     def each(self):
