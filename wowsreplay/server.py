@@ -32,6 +32,29 @@ MAX_UPLOAD = 50 << 20                 # real replays are a few MB
 ID_RE = re.compile(r'^[0-9a-f]{64}$')
 
 
+PKG_DIR = os.path.dirname(os.path.abspath(__file__))
+_stamp = [0.0, 0.0]          # [checked at, value]
+
+
+def data_stamp():
+    """Newest mtime of what a page is built from: imported game data (maps, models, icons, versions), the parser and
+    the viewer. A page older than this is rebuilt - e.g. after tools/update.py import adds the map it was missing."""
+    now = time.time()
+    if now - _stamp[0] < 10:
+        return _stamp[1]
+    newest = 0.0
+    roots = [os.path.join(PKG_DIR, 'data')]
+    files = [os.path.join(PKG_DIR, '..', 'viewer', 'viewer.html')] +         [os.path.join(PKG_DIR, f) for f in os.listdir(PKG_DIR) if f.endswith('.py') and f != 'server.py']
+    for root in roots:
+        for d, _sub, names in os.walk(root):
+            newest = max([newest, os.path.getmtime(d)] + [os.path.getmtime(os.path.join(d, n)) for n in names])
+    for f in files:
+        if os.path.isfile(f):
+            newest = max(newest, os.path.getmtime(f))
+    _stamp[:] = [now, newest]
+    return newest
+
+
 class Library:
     """Replays on disk: <data>/replays/<id>.wowsreplay, <data>/pages/<id>.html, <data>/index.json."""
 
@@ -48,6 +71,33 @@ class Library:
         except FileNotFoundError:
             self.index = {}
         self.pool = ThreadPoolExecutor(max_workers=workers, thread_name_prefix='replay')
+        self.futures = {}
+        stale = [rid for rid in self.index if self.stale(rid)]
+        if stale:
+            print(f'rebuilding {len(stale)} page(s) made before the latest game data / viewer update')
+        for rid in stale:
+            self._queue(rid, self.index[rid].get('file') or 'replay.wowsreplay', rebuild=True)
+
+    def stale(self, rid):
+        e = self.index.get(rid)
+        return bool(e) and os.path.isfile(self.path('replays', rid)) and (e.get('stamp') or 0) < data_stamp()
+
+    def _queue(self, rid, filename, rebuild=False):
+        """Start (or join) the build of rid; returns its future."""
+        with self.lock:
+            if self.jobs.get(rid, {}).get('status') in ('queued', 'processing') and rid in self.futures:
+                return self.futures[rid]
+            self.jobs[rid] = {'status': 'queued', 'filename': filename}
+            fut = self.futures[rid] = self.pool.submit(self._process, rid, filename, rebuild)
+            return fut
+
+    def ensure_fresh(self, rid, timeout=180):
+        """Rebuild rid's page first if it predates the current game data / viewer (the request waits for it)."""
+        if self.stale(rid):
+            try:
+                self._queue(rid, self.index[rid].get('file') or 'replay.wowsreplay', rebuild=True).result(timeout)
+            except Exception:
+                pass                  # keep serving the old page; the error is in the job status / log
 
     def path(self, kind, rid):
         return os.path.join(self.root, kind, rid + ('.html' if kind == 'pages' else '.wowsreplay'))
@@ -67,14 +117,13 @@ class Library:
                 return rid, self.jobs[rid]['status']
             with open(self.path('replays', rid), 'wb') as f:
                 f.write(body)
-            self.jobs[rid] = {'status': 'queued', 'filename': filename}
-        self.pool.submit(self._process, rid, filename)
+        self._queue(rid, filename)
         return rid, 'queued'
 
-    def _process(self, rid, filename):
+    def _process(self, rid, filename, rebuild=False):
         with self.lock:
             self.jobs[rid]['status'] = 'processing'
-        t0 = time.time()
+        t0, stamp = time.time(), data_stamp()
         try:
             data = build_data(self.path('replays', rid))
             page = render_page(data)
@@ -90,7 +139,7 @@ class Library:
                 'duration': round(m.get('end') or 0), 'player': own.get('name'), 'ship': own.get('ship'),
                 'result': None if not res else 'win' if res.get('winnerTeamId') == m.get('ownTeam')
                 else 'draw' if (res.get('winnerTeamId') or 0) < 0 else 'loss',
-                'processed': time.strftime('%Y-%m-%d %H:%M:%S'), 'seconds': round(time.time() - t0, 1),
+                'processed': time.strftime('%Y-%m-%d %H:%M:%S'), 'seconds': round(time.time() - t0, 1), 'stamp': stamp,
                 'warnings': [] if data['map'] else ['map not imported: no minimap or terrain'],
             }
             with self.lock:
@@ -104,10 +153,11 @@ class Library:
                 msg += ' - replays from a game version need that version imported (tools/update.py)'
             with self.lock:
                 self.jobs[rid] = {'status': 'error', 'error': msg}
-            try:
-                os.remove(self.path('replays', rid))
-            except OSError:
-                pass
+            if not rebuild:           # a failed rebuild keeps the replay and its previous page
+                try:
+                    os.remove(self.path('replays', rid))
+                except OSError:
+                    pass
 
     def status(self, rid):
         with self.lock:
@@ -172,6 +222,7 @@ class Handler(BaseHTTPRequestHandler):
             return self._send(200, st) if st else self._error(404, 'unknown replay')
         m = re.fullmatch(r'/r/([0-9a-f]{64})', path)
         if m:
+            self.library.ensure_fresh(m.group(1))
             p = self.library.path('pages', m.group(1))
             if not os.path.isfile(p):
                 return self._error(404, 'no page for that replay (yet)')

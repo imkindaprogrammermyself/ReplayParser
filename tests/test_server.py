@@ -73,6 +73,15 @@ class ServerTests(unittest.TestCase):
         st, data = self.upload(body)                       # same file again: already there
         self.assertEqual((st, json.loads(data)['status']), (200, 'done'))
 
+        lib = self.srv.RequestHandlerClass.library        # page older than the game data: rebuilt when opened
+        with lib.lock:
+            lib.index[rid]['stamp'] = 0
+            lib.index[rid]['processed'] = 'old'
+        st, page = self.req('GET', f'/r/{rid}')
+        self.assertEqual(st, 200)
+        self.assertNotEqual(lib.index[rid]['processed'], 'old')
+        self.assertFalse(lib.stale(rid))
+
     def test_rejects(self):
         self.assertEqual(self.upload(b'not a replay at all')[0], 415)
         self.assertEqual(self.req('GET', '/r/' + '0' * 64)[0], 404)
