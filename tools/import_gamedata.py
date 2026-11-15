@@ -88,6 +88,15 @@ def ship_entries(gp_bytes):
         hull = hulls[-1] if hulls else {}      # last in name order = top hull
         size = hull.get('size') or (None, None, None)
         ranges = [a.get('maxDist') for a in arts if isinstance(a, dict) and a.get('maxDist')]
+        # mounts per module kind in the top configuration (last in name order), for the viewer's ship card
+        modules = {}
+        for comp, kind in (('Artillery', 'main'), ('ATBA', 'secondary'), ('AirDefense', 'aa'),
+                           ('Torpedoes', 'torpedo'), ('DepthChargeGuns', 'depthcharge')):
+            keys = [k for k in sorted(p) if re.fullmatch(rf'(?:[A-Z0-9]+_{comp}|{comp}Default)', k)]
+            c = state(p[keys[-1]]) if keys else None
+            n = sum(1 for k, v in c.items() if k.startswith('HP_') and isinstance(state(v), dict)) if isinstance(c, dict) else 0
+            if n:
+                modules[kind] = n
         ships[str(p['id'])] = {
             'index': p.get('name') or key, 'species': info.get('species'), 'nation': info.get('nation'),
             'level': p.get('level'),
@@ -97,6 +106,7 @@ def ship_entries(gp_bytes):
             'maxSpeed': hull.get('maxSpeed'),                          # knots
             'model': hull.get('model'),
             'consumables': ship_consumables(root, p),
+            'modules': modules,
         }
     return ships
 
@@ -219,7 +229,8 @@ def main(argv):
         n = 0
         for k, e in old.items():
             if k in ships:
-                e.update({x: ships[k][x] for x in ('length', 'beam', 'mainRange', 'concealment', 'maxSpeed', 'model', 'consumables')})
+                e.update({x: ships[k][x] for x in ('length', 'beam', 'mainRange', 'concealment', 'maxSpeed', 'model', 'consumables',
+                                                   'modules')})
                 n += 1
         with open(p, 'w', encoding='utf-8') as f:
             json.dump(old, f, separators=(',', ':'))

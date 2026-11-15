@@ -103,6 +103,14 @@ class TimelineBuilder:
         # [t, owner, x, z, dirx, dirz, end_t, end_x, end_z, end_hitType, path]: dir is per second; end from
         # receiveShotKills (None if never seen); path = [[t, x, z]] course points of maneuvering / homing torpedoes
         self.torpedoes = []
+        # vid -> [t, hitLocationId, flags, timer_s] when a module's state changes (receiveHitLocationStateChange).
+        # id = type * 1000 + index; types: 1 main turret, 2 secondary, 5 engine, 9 torpedo tube, 12 AA mount,
+        # 14 steering gear, 15 depth charges, 21 submarine sonar (counts match GameParams per ship; engine /
+        # steering from ships slowing down / rudder frozen while out). statePacked: bits 0-9 hp (/1023), bits 10-11
+        # flags (0 working, 2 knocked out, 3 destroyed), bits 12+ a timer in ms (not the repair time left: a knocked-
+        # out module stays out until its next event; destroyed AA / secondaries come back ~150 s later).
+        self.module_states = defaultdict(list)
+        self._module_last = {}
         self.speed = defaultdict(list)     # vid -> [t, knots]  (serverSpeedRaw / SPEED_RAW_PER_KNOT, < 0 astern)
         self.rudder = defaultdict(list)    # vid -> [t, rudder -1..1]  (ruddersAngle / 30 deg, + = starboard)
         self._torp = {}                    # (owner, shotID) -> torpedo row still running
@@ -375,6 +383,18 @@ class TimelineBuilder:
         label = self.CONSUMABLE_LABELS.get(name, name.replace('_', ' ').capitalize())
         self.consumables.append([_r(t), self._eid, label, _r(a['workTimeLeft']), info.get('range')])
 
+    MODULE_TYPES = {1, 2, 5, 9, 12, 14, 15, 21}
+
+    def m_Vehicle_receiveHitLocationStateChange(self, t, a):
+        hl, packed = a[0], a[1]
+        if hl // 1000 not in self.MODULE_TYPES:
+            return
+        flags, timer = (packed >> 10) & 3, (packed >> 12) / 1000
+        key = (self._eid, hl)
+        if self._module_last.get(key) != (flags, timer):
+            self._module_last[key] = (flags, timer)
+            self.module_states[self._eid].append([_r(t), hl, flags, _r(timer, 1)])
+
     def m_Vehicle_receiveDamagesOnShip(self, t, a):
         # sent to the damaged ship: [{vehicleID: attacker, damage}]
         for d in a[0]:
@@ -606,6 +626,8 @@ class TimelineBuilder:
                 'ship': params.get('index') or str(r.get('shipParamsId', '?')),
                 'species': params.get('species'), 'level': params.get('level'),
                 'length': params.get('length'),     # metres (GameParams hull size)
+                'modules': params.get('modules'),   # mounts per kind (main, secondary, aa, torpedo, depthcharge)
+                'mainRange': params.get('mainRange'), 'concealment': params.get('concealment'),
             })
 
         xs, zs = [], []
@@ -649,6 +671,7 @@ class TimelineBuilder:
             'depth': {str(k): v for k, v in self.depth.items() if any(d[1] < -.5 for d in v)},
             'torpAim': {str(k): v for k, v in self.torp_aim.items()},
             'speed': {str(k): v for k, v in self.speed.items()},
+            'modules': {str(k): v for k, v in self.module_states.items()},
             'rudder': {str(k): v for k, v in self.rudder.items()},
             'deaths': self.deaths,
             'zones': sorted(self.zones.values(), key=lambda z: (z['index'] is None, z['index'])),

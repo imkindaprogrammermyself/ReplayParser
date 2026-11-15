@@ -84,6 +84,20 @@
   #hud { position: absolute; left: 10px; top: 10px; background: rgba(11, 18, 32, .75); border: 1px solid var(--line);
     border-radius: 6px; padding: 6px 8px; font-size: 12px; color: var(--muted); pointer-events: none; }
   #hud b { color: var(--text); }
+  #card { position: absolute; right: 10px; top: 10px; width: 260px; background: rgba(11, 18, 32, .86); border: 1px solid var(--line);
+    border-radius: 8px; padding: 8px 10px; font-size: 12px; color: var(--muted); pointer-events: none; }
+  #card:empty { display: none; }
+  #card .ch { display: flex; justify-content: space-between; align-items: baseline; gap: 8px; }
+  #card .ch b { font-size: 13px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  #card .cs { font-size: 11px; display: flex; align-items: center; gap: 6px; margin: 2px 0 6px; }
+  #card .cs img { height: 14px; }
+  #card .bar { height: 6px; background: var(--panel-2); border-radius: 3px; overflow: hidden; margin: 2px 0 2px; }
+  #card .bar i { display: block; height: 100%; }
+  #card .row { display: flex; justify-content: space-between; gap: 8px; padding: 1px 0; }
+  #card .row b { color: var(--text); font-weight: 600; }
+  #card .sec { margin-top: 6px; padding-top: 5px; border-top: 1px solid var(--line); }
+  #card .bad { color: #f87171; } #card .warn { color: #fbbf24; } #card .ok { color: #86efac; }
+  #card .fire { color: #fb923c; font-weight: 600; } #card .flood { color: #38bdf8; font-weight: 600; }
   #drop { position: absolute; inset: 0; display: none; place-items: center; text-align: center; color: var(--muted); }
   #drop.show { display: grid; }
   #drop .box { border: 2px dashed var(--line); border-radius: 10px; padding: 30px 40px; }
@@ -103,6 +117,7 @@
     <div id="flyhint" hidden></div>
     <div id="maphint" hidden></div>
     <div id="hud"></div>
+    <div id="card"></div>
     <div id="drop"><div class="box">
       <p><b>No replay data embedded.</b></p>
       <p>Drop a timeline <code>.json</code> here, or <input type="file" id="file" accept=".json"></p>
@@ -164,7 +179,7 @@ const esc = s => String(s).replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;',
 // ------------------------------------------------------------------ state
 let D, ships, byId, deathOf, t = 0, playing = false, lastFrame = 0, mapImg = null;
 const opts = { names: true, trails: true, shells: true, torps: true, planes: true, hits: true, smoke: true, consumables: true,
-               fires: true, floods: true, camera: true, ghosts: true };
+               fires: true, floods: true, camera: true, ghosts: true, card: true };
 
 function load(data) {
   D = data;
@@ -323,6 +338,7 @@ function draw() {
   drawHud();
   drawTimeline();
   updateSide();
+  updateCard();
 }
 
 function draw2D() {
@@ -830,6 +846,69 @@ function shipIcon(s, dead) {
   const ic = D.icons && D.icons[s.ship];
   const src = ic && (dead && ic.dead || ic.alive);
   return src ? `<img src="${src}" alt="">` : '';
+}
+// ship card: the selected ship (own ship by default) at time t - health, speed, status, consumables, modules
+const MODULES = [[1, 'Main battery', 'main'], [9, 'Torpedoes', 'torpedo'], [15, 'Depth charges', 'depthcharge'],
+                 [2, 'Secondaries', 'secondary'], [12, 'AA mounts', 'aa'], [5, 'Engine', null], [14, 'Steering gear', null],
+                 [21, 'Sonar', null]];
+// module state = its latest event: flags 3 destroyed (AA / secondaries come back ~150 s later), 2 knocked out until
+// the next event (the event's timer is not the time left: repairs end later or, with damage control, at once)
+function moduleState(id) {   // type -> {out: n, destroyed: n}
+  const last = {}, out = {};
+  for (const ev of (D.modules && D.modules[id]) || []) { if (ev[0] > t) break; last[ev[1]] = ev; }
+  for (const [hl, ev] of Object.entries(last)) {
+    const ty = Math.floor(hl / 1000), m = out[ty] || (out[ty] = { out: 0, destroyed: 0 });
+    if (ev[2] === 3) m.destroyed++;
+    else if (ev[2] === 2) m.out++;
+  }
+  return out;
+}
+function updateCard() {
+  const el = document.getElementById('card');
+  const s = byId[selectedId] || ships.find(x => x.relation === 'self');
+  if (!opts.card || !s) { el.innerHTML = ''; return; }
+  const st = shipState(s), dead = deathOf[s.id] && t >= deathOf[s.id][0];
+  const hp = st ? Math.max(0, st.hp) : null, f = hp != null && s.maxHealth ? Math.min(1, hp / s.maxHealth) : 0;
+  const kn = speedAt(s.id), rud = rudderAt(s.id), depth = depthAt(s.id);
+  const rows = [];
+  const row = (k, v) => rows.push(`<div class="row"><span>${k}</span><span>${v}</span></div>`);
+  if (dead) {
+    const d = deathOf[s.id], killer = byId[d[2]];
+    row('Sunk', `<b class="bad">${fmt(d[0])}</b>${killer && d[2] !== s.id ? ` by <b>${esc(killer.name)}</b>` : ''} <span>${esc(String(d[3] || '').toLowerCase())}</span>`);
+  } else {
+    if (kn != null) row('Speed', `<b>${kn.toFixed(1)} kn</b>${rud != null ? ` · ${rudderText(rud)}` : ''}`);
+    if (depth < -1) row('Depth', `<b>${Math.round(depth)} m</b>`);
+    if (st && st.ghost) row('Position', '<span class="warn">last seen</span>');
+    const fires = fireCount(s.id), floods = floodCount(s.id);
+    if (fires || floods) row('Damage', `${fires ? `<span class="fire">fire ×${fires}</span> ` : ''}${floods ? `<span class="flood">flood ×${floods}</span>` : ''}`);
+    const act = activeConsumables(s.id);
+    if (act.length) row('Active', act.map(c => `<b style="color:${consColor(c.label)}">${esc(c.label)}</b> ${Math.ceil(c.left)}s`).join(', '));
+  }
+  const ms = moduleState(s.id), counts = s.modules || {}, mods = [];
+  for (const [ty, label, key] of MODULES) {
+    const m = ms[ty], total = key ? counts[key] : null;
+    if (!m && !total && ty !== 5 && ty !== 14) continue;
+    const bad = m ? m.destroyed : 0, out = m ? m.out : 0;
+    let v;
+    if (total) v = `<b class="${bad + out ? (bad === total ? 'bad' : 'warn') : 'ok'}">${total - bad - out}/${total}</b>`;
+    else v = bad ? '<b class="bad">destroyed</b>' : out ? '<b class="warn">knocked out</b>' : '<b class="ok">ok</b>';
+    if (out && total) v += ` <span class="warn">${out} out</span>`;
+    if (bad && total) v += ` <span class="bad">${bad} lost</span>`;
+    mods.push(`<div class="row"><span>${label}</span><span>${v}</span></div>`);
+  }
+  const dealt = valAt(D._dealt[s.id], t, [0, 0])[1], taken = valAt(D._taken[s.id], t, [0, 0])[1];
+  const ht = D._hitTimes[s.id] || {}, tally = Object.entries(SHIP_HITS).map(([k, v]) => {
+    const n = (ht[k] || []).filter(x => x <= t).length;
+    return n ? `<span style="color:${v[2]}">${n} ${v[1]}</span>` : '';
+  }).filter(Boolean).join(' · ');
+  el.innerHTML = `<div class="ch"><b class="${s.relation}">${esc(s.clan ? `[${s.clan}] ` : '')}${esc(s.name)}</b></div>
+    <div class="cs">${shipIcon(s, dead)}<span>${esc(shortShip(s.ship))} · ${esc(s.species || '?')} ${s.level || ''}</span></div>
+    <div class="row"><span>Health</span><span><b>${hp != null && !dead ? Math.round(hp).toLocaleString() : 0}</b> / ${(s.maxHealth || 0).toLocaleString()}</span></div>
+    <div class="bar"><i style="width:${dead ? 0 : f * 100}%;background:${f > .5 ? COLORS.ally : f > .25 ? COLORS.self : COLORS.enemy}"></i></div>
+    ${rows.join('')}
+    ${mods.length ? `<div class="sec">${mods.join('')}</div>` : ''}
+    <div class="sec"><div class="row"><span>Damage</span><span>dealt <b>${kfmt(dealt)}</b> · taken <b>${kfmt(taken)}</b></span></div>
+    ${tally ? `<div class="row"><span>Hits</span><span>${tally}</span></div>` : ''}</div>`;
 }
 function buildSide() {
   const m = D.meta, res = m.result;
