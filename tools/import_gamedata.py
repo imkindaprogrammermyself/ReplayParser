@@ -5,6 +5,7 @@
 Writes wowsreplay/data/<version>/:
   scripts/        entities.xml + entity_defs, straight from the client
   ships.json      every Ship in content/GameParams.data, with hull size, main gun range, concealment
+and wowsreplay/data/drops.json (all versions): Drop id -> name / map marker (Arms Race buff zones).
   constants.json  copied from --constants-from (the arena-state key maps and death reasons are not in
                   these files; they come from replays_unpack, so check a replay of this version decodes)
 
@@ -118,6 +119,17 @@ def ship_consumables(root, ship):
     return out
 
 
+def drop_entries(root):
+    """GameParams id -> {name, marker} of every Drop (Arms Race buff pickups etc.); ids are stable across versions."""
+    out = {}
+    for key, o in root.items():
+        p = state(o)
+        if isinstance(p, dict) and (state(p.get('typeinfo')) or {}).get('species') == 'Drop':
+            marker = (p.get('markerNameActive') or '').replace('_active', '')
+            out[str(p['id'])] = {'name': p.get('name') or key, 'marker': marker}
+    return out
+
+
 def main(argv):
     ap = argparse.ArgumentParser()
     ap.add_argument('source', help='wows_gamedata.zip or the unpacked folder')
@@ -154,6 +166,9 @@ def main(argv):
     index = {v['index']: sorted(model_dirs(root, v['index'])) for v in ships.values() if v['index'] in root}
     with open(os.path.join(out, 'model_dirs.json'), 'w', encoding='utf-8') as f:
         json.dump(index, f, separators=(',', ':'))
+
+    with open(os.path.join(DATA, 'drops.json'), 'w', encoding='utf-8') as f:
+        json.dump(drop_entries(root), f, indent=0, sort_keys=True)
 
     if a.constants_from:
         shutil.copy(os.path.join(DATA, a.constants_from, 'constants.json'), os.path.join(out, 'constants.json'))

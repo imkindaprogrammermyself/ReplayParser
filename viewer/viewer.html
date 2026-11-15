@@ -258,19 +258,39 @@ function draw2D() {
   if (opts.camera) drawCamera(ctx);
 }
 
+// zones: kind 'capture' (A, B, ...), 'buff' (Arms Race pickup, z.buff = drop marker), 'fighters' (patrol fighters'
+// area, z.owner = ship), 'zone' (anything else). Buff and fighter zones exist only between start and end.
+const BUFF_LABELS = { repair: 'Repair', reload: 'Reload', health: 'Max HP', damage: 'Damage', visibility: 'Concealment',
+                      engineboost: 'Speed', heburnchance: 'Fire chance', consumabletime: 'Consumables',
+                      repair_party: 'Repair party', random_consumable: 'Consumable', pack_chooser: 'Buff pack' };
+const zoneLive = z => t >= (z.start || 0) && (z.end == null || t < z.end);
+function zoneLabel(z) {
+  if (z.index != null) return 'ABCDEFGH'[z.index];
+  if (z.kind === 'buff') return z.buff ? BUFF_LABELS[z.buff] || z.buff.replace(/_/g, ' ') : 'Buff';
+  if (z.kind === 'fighters') return '✈ Fighters';
+  return '?';
+}
+function zoneColor(z, owner) {
+  if (z.kind === 'buff') return '#facc15';
+  if (z.kind === 'fighters') return colorOf(byId[z.owner]);
+  return teamColor(owner);
+}
 function drawZones(ctx) {
   for (const z of D.zones) {
+    if (!zoneLive(z)) continue;
     const owner = valAt(z.team, t, [0, -1])[1];
     const [, progress, invader] = valAt(z.capture, t, [0, 0, -1]);
-    const R = z.radius * view.scale, X = sx(z.x), Y = sy(z.z), col = teamColor(owner);
-    ctx.globalAlpha = .14; ctx.fillStyle = col; ctx.beginPath(); ctx.arc(X, Y, R, 0, Math.PI * 2); ctx.fill();
-    ctx.globalAlpha = .7; ctx.strokeStyle = col; ctx.lineWidth = 1.5; ctx.stroke();
+    const R = z.radius * view.scale, X = sx(z.x), Y = sy(z.z), col = zoneColor(z, owner);
+    if (z.kind === 'fighters') ctx.setLineDash([6, 5]);
+    ctx.globalAlpha = z.kind === 'fighters' ? .06 : .14; ctx.fillStyle = col; ctx.beginPath(); ctx.arc(X, Y, R, 0, Math.PI * 2); ctx.fill();
+    ctx.globalAlpha = .7; ctx.strokeStyle = col; ctx.lineWidth = 1.5; ctx.stroke(); ctx.setLineDash([]);
     if (invader >= 0 && progress > 0) {
       ctx.globalAlpha = 1; ctx.strokeStyle = teamColor(invader); ctx.lineWidth = 4;
       ctx.beginPath(); ctx.arc(X, Y, R + 3, -Math.PI / 2, -Math.PI / 2 + progress * Math.PI * 2); ctx.stroke();
     }
-    ctx.globalAlpha = .9; ctx.fillStyle = col; ctx.font = 'bold 16px system-ui'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
-    ctx.fillText(z.index != null ? 'ABCDEFGH'[z.index] : '?', X, Y);
+    ctx.globalAlpha = .9; ctx.fillStyle = col; ctx.font = z.kind === 'capture' ? 'bold 16px system-ui' : 'bold 11px system-ui';
+    ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+    ctx.fillText(zoneLabel(z), X, z.kind === 'fighters' ? Y - R + 8 : Y);
     ctx.globalAlpha = 1;
   }
 }
@@ -1040,9 +1060,9 @@ function v3Zone(z) {
   V3.scene.add(disc, ring, wall, prog);
   const el = document.createElement('div');
   el.className = 'lbl zone';
-  el.textContent = z.index != null ? 'ABCDEFGH'[z.index] : '?';
+  el.textContent = zoneLabel(z);
   V3.labels.appendChild(el);
-  return { z, x, zz, discMat, ringMat, wallMat, prog, progMat, el, lastProgress: -1 };
+  return { z, x, zz, discMat, ringMat, wallMat, prog, progMat, el, meshes: [disc, ring, wall, prog], lastProgress: -1 };
 }
 
 function v3Label(el, x, y, z) {
@@ -1109,8 +1129,11 @@ function v3Update() {
   }
 
   for (const zo of V3.zones) {
+    const live = zoneLive(zo.z);
+    for (const m of zo.meshes) m.visible = live;
+    if (!live) { zo.el.style.display = 'none'; continue; }
     const owner = valAt(zo.z.team, t, [0, -1])[1], [, progress, invader] = valAt(zo.z.capture, t, [0, 0, -1]);
-    const col = teamColor(owner);
+    const col = zoneColor(zo.z, owner);
     zo.discMat.color.set(col); zo.ringMat.color.set(col); zo.wallMat.color.set(col);
     const pr = invader >= 0 ? progress : 0;
     if (Math.abs(pr - zo.lastProgress) > .004) {

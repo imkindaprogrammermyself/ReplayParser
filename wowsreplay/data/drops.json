@@ -1,0 +1,214 @@
+{
+"4240328624": {
+"marker": "scientists",
+"name": "PCOD052_Bermuda_Scientists"
+},
+"4241377200": {
+"marker": "convoy_consumable",
+"name": "PCOD051_Bermuda_Artifact"
+},
+"4242425776": {
+"marker": "convoy_consumable",
+"name": "PCOD050_LOW_lvl_Ops_HP_Drop"
+},
+"4243474352": {
+"marker": "convoy_consumable",
+"name": "PCOD049_LOW_lvl_Ops_Drop"
+},
+"4244522928": {
+"marker": "convoy_consumable",
+"name": "PCOD048_ART_MaxHP_Drop"
+},
+"4245571504": {
+"marker": "repair",
+"name": "PCOD047_WW2_Key_Objects_Drop"
+},
+"4246620080": {
+"marker": "convoy_consumable",
+"name": "PCOD046_MaxHP"
+},
+"4247668656": {
+"marker": "reload",
+"name": "PCOD045_Flagship_Drop"
+},
+"4248717232": {
+"marker": "scrap",
+"name": "PCOD044_Resist_Damage"
+},
+"4249765808": {
+"marker": "",
+"name": "PCOD043_EngineBufftDuration"
+},
+"4250814384": {
+"marker": "damage",
+"name": "PCOD042_AR_AddWeaponDamage"
+},
+"4251862960": {
+"marker": "health",
+"name": "PCOD041_AR_AddHeath"
+},
+"4252911536": {
+"marker": "pack_chooser",
+"name": "PCOD040_GSImproveDuration"
+},
+"4253960112": {
+"marker": "pack_chooser",
+"name": "PCOD039_HealDuration"
+},
+"4255008688": {
+"marker": "pack_chooser",
+"name": "PCOD038_SpeedDuration"
+},
+"4256057264": {
+"marker": "pack_chooser",
+"name": "PCOD037_ResistDuration"
+},
+"4257105840": {
+"marker": "pack_chooser",
+"name": "PCOD036_PackChooser2"
+},
+"4258154416": {
+"marker": "pack_chooser",
+"name": "PCOD035_PackChooser"
+},
+"4259202992": {
+"marker": "pack_chooser",
+"name": "PCOD034_PackChooserLvl5"
+},
+"4260251568": {
+"marker": "pack_chooser",
+"name": "PCOD033_PackChooserLvl4"
+},
+"4261300144": {
+"marker": "pack_chooser",
+"name": "PCOD032_PackChooserLvl3"
+},
+"4262348720": {
+"marker": "pack_chooser",
+"name": "PCOD031_PackChooserLvl2"
+},
+"4263397296": {
+"marker": "pack_chooser",
+"name": "PCOD030_PackChooserLvl1"
+},
+"4264445872": {
+"marker": "random_consumable",
+"name": "PCOD029_Slot5"
+},
+"4265494448": {
+"marker": "random_consumable",
+"name": "PCOD028_Slot4"
+},
+"4266543024": {
+"marker": "random_consumable",
+"name": "PCOD027_Slot3"
+},
+"4267591600": {
+"marker": "random_consumable",
+"name": "PCOD026_Slot2"
+},
+"4268640176": {
+"marker": "random_consumable",
+"name": "PCOD025_Slot1"
+},
+"4269688752": {
+"marker": "",
+"name": "PCOD024_WeaponChooser_Torpedo_2"
+},
+"4270737328": {
+"marker": "",
+"name": "PCOD023_WeaponChooser_Torpedo_1"
+},
+"4271785904": {
+"marker": "",
+"name": "PCOD022_WeaponChooser_WaveGun_SectorWave"
+},
+"4272834480": {
+"marker": "",
+"name": "PCOD021_WeaponChooser_Artillery_AP"
+},
+"4273883056": {
+"marker": "",
+"name": "PCOD020_WeaponChooser_Artillery_HE_Catapult"
+},
+"4274931632": {
+"marker": "",
+"name": "PCOD019_WeaponChooser_Artillery_HE"
+},
+"4275980208": {
+"marker": "",
+"name": "PCOD018_WeaponChooser_HeatLaser"
+},
+"4277028784": {
+"marker": "",
+"name": "PCOD017_WeaponChooser_ChargeLaser"
+},
+"4278077360": {
+"marker": "",
+"name": "PCOD016_AbilityChooser_CrashCrew"
+},
+"4279125936": {
+"marker": "",
+"name": "PCOD015_WeaponChooser_WaveGun"
+},
+"4280174512": {
+"marker": "pack_chooser",
+"name": "PCOD014_PackDuration"
+},
+"4281223088": {
+"marker": "pack_chooser",
+"name": "PCOD013_PackChooser3"
+},
+"4282271664": {
+"marker": "",
+"name": "PCOD012_AddAnyConsumables_H2019"
+},
+"4283320240": {
+"marker": "",
+"name": "PCOD011_AddAnyConsumables_H2019"
+},
+"4284368816": {
+"marker": "random_consumable",
+"name": "PCOD010_AddConsumables_PA3"
+},
+"4285417392": {
+"marker": "random_consumable",
+"name": "PCOD009_AddConsumables_PA2"
+},
+"4286465968": {
+"marker": "random_consumable",
+"name": "PCOD008_AddConsumables_PA"
+},
+"4287514544": {
+"marker": "repair_party",
+"name": "PCOD007_AddConsumables"
+},
+"4288563120": {
+"marker": "consumabletime",
+"name": "PCOD006_ConsumableTime"
+},
+"4289611696": {
+"marker": "heburnchance",
+"name": "PCOD005_HEBurnChance"
+},
+"4290660272": {
+"marker": "engineboost",
+"name": "PCOD004_EngineBoost"
+},
+"4291708848": {
+"marker": "reload",
+"name": "PCOD003_ShotDelay"
+},
+"4292757424": {
+"marker": "repair",
+"name": "PCOD002_Regeneration"
+},
+"4293806000": {
+"marker": "visibility",
+"name": "PCOD001_Visibility"
+},
+"4294854576": {
+"marker": "surprise",
+"name": "PCOD000_Surprise"
+}
+}

@@ -68,6 +68,12 @@ class TimelineBuilder:
             self.ship_params = json.load(f)
         with open(os.path.join(DATA_DIR, 'consumables.json'), encoding='utf-8') as f:
             self.consumable_ids = json.load(f)['ids']
+        try:   # GameParams Drop id -> {name, marker} (tools/import_gamedata.py); optional
+            with open(os.path.join(DATA_DIR, 'drops.json'), encoding='utf-8') as f:
+                self.drop_params = json.load(f)
+        except FileNotFoundError:
+            self.drop_params = {}
+        self._zone_drop = {}               # zone entity -> drop paramsId (BattleLogic state.drop.data)
 
         self.entities = {}                 # entity id -> EntityDef
         self.values = defaultdict(dict)    # entity id -> {prop name: value}
@@ -176,12 +182,21 @@ class TimelineBuilder:
         elif edef.name == 'InteractiveZone':
             cap = (vals.get('componentsState') or {}).get('captureLogic') or {}
             cp = (vals.get('componentsState') or {}).get('controlPoint') or {}
+            # InteractiveZone.type: 9 = capture point (controlPoint index), 6 = Arms Race buff pickup (what it
+            # gives: BattleLogic state.drop.data[zoneId].paramsId), 12 = patrol fighters' area (name
+            # '<planeID>.59', ownerId = ship, effectState.leftTime = s left). Others are kept as 'zone'.
+            ztype = vals.get('type')
+            kind = 'capture' if cp or ztype == 9 else 'buff' if ztype == 6 else 'fighters' if ztype == 12 else 'zone'
+            eff = vals.get('effectState') or {}
             self.zones[eid] = {
                 'id': eid, 'x': _r(x), 'z': _r(z), 'radius': _r(vals.get('radius', 0)),
-                'index': cp.get('index'),
+                'index': cp.get('index'), 'kind': kind, 'type': ztype,
+                'start': _r(t), 'end': _r(t + eff['leftTime']) if eff.get('leftTime') else None,
+                'owner': vals.get('ownerId') or None, 'buff': None,
                 'team': [[_r(t), vals.get('teamId')]],
                 'capture': [[_r(t), _r(cap.get('progress', 0), 3), cap.get('invaderTeam', -1)]],
             }
+            self._zone_buff(eid)
         elif edef.name == 'BattleLogic':
             self._record_battle_logic(t, vals)
         elif edef.name == 'SmokeScreen':
@@ -197,6 +212,15 @@ class TimelineBuilder:
             spans[-1][1] = _r(t)
         if eid in self.smokes and self.smokes[eid]['end'] is None:
             self.smokes[eid]['end'] = _r(t)
+        z = self.zones.get(eid)
+        if z and z['kind'] != 'capture' and (z['end'] is None or t < z['end']):
+            z['end'] = _r(t)                                 # picked up / patrol over
+
+    def _zone_buff(self, eid):
+        z = self.zones.get(eid)
+        if z and z['kind'] == 'buff' and z['buff'] is None and eid in self._zone_drop:
+            info = self.drop_params.get(str(self._zone_drop[eid])) or {}
+            z['buff'] = info.get('marker') or info.get('name') or str(self._zone_drop[eid])
 
     def on_property(self, t, b):
         eid, idx, size = struct.unpack_from('<III', b)
@@ -251,6 +275,10 @@ class TimelineBuilder:
         if edef is None or edef.name == 'Avatar':   # Avatar cell props are not decoded
             return
         _, path = nested.apply(b, edef, self.values[eid])
+        if edef.name == 'BattleLogic' and path[:2] == ['state', 'drop']:
+            for dr in ((self.values[eid].get('state') or {}).get('drop') or {}).get('data') or ():
+                self._zone_drop[dr['zoneId']] = dr['paramsId']
+                self._zone_buff(dr['zoneId'])
         if edef.name == 'BattleLogic' and path[:3] == ['state', 'missions', 'teamsScore']:
             self._record_battle_logic(t, self.values[eid])
         elif edef.name == 'SmokeScreen' and path[:1] == ['points'] and eid in self.smokes:
