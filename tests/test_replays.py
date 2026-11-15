@@ -147,6 +147,24 @@ class ReplayTests(unittest.TestCase):
                 for series in d['rudder'].values():
                     self.assertTrue(all(-1.01 <= x <= 1.01 for _, x in series))
 
+    def test_plane_tracks_smooth(self):
+        """Squadron tracks rarely jump (> 2.5x the squadron's median speed); mixing waypoints (1.3-2.3 s ahead)
+        with current minimap points as if they were simultaneous made ~25% of consumable-plane steps jump."""
+        import statistics
+        for r, d in self.each():
+            with self.subTest(replay=os.path.basename(r)):
+                steps = jumps = 0
+                for sq in d['planes']:
+                    tr = sq['track']
+                    sp = [math.hypot(b[1] - a[1], b[2] - a[2]) / (b[0] - a[0]) for a, b in zip(tr, tr[1:]) if b[0] > a[0]]
+                    if len(sp) < 4:
+                        continue
+                    med = statistics.median(sp)
+                    steps += len(sp)
+                    jumps += sum(1 for v in sp if v > 2.5 * med + 1)
+                if steps > 200:
+                    self.assertLess(jumps / steps, .03, f'{jumps} of {steps}')
+
     def test_burn_flood_bits(self):
         """burningFlags = 4 burn nodes (bits 0-3) + 2 flood nodes (bits 4-5); a ram floods the survivor."""
         for r, d in self.each():

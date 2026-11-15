@@ -4,6 +4,7 @@ All times are seconds since replay start (packet clock). World coordinates
 are BigWorld units on the x/z plane; +z is north (up on the minimap) and
 yaw 0 points along +z, so heading = (sin yaw, cos yaw).
 """
+import bisect
 import json
 import math
 import os
@@ -110,6 +111,7 @@ class TimelineBuilder:
         # squadrons by planeID (low 32 bits = owning ship): {id, owner, team, params, n,
         #   track [[t, x, z, y | None]], losses [[t, count]], start, end}
         self.planes = {}
+        self._planes_done = []
         self.depth = defaultdict(list)     # vid -> [t, buoyancyCurrentWaterline] (submarines, < 0 = submerged)
         self.battle_result = None
         self.win_score = None
@@ -371,19 +373,77 @@ class TimelineBuilder:
     def _plane(self, t, pid, team=None, params=None):
         sq = self.planes.get(pid)
         if sq is None or (sq['end'] is not None and t > sq['end'] + 1):
+            if sq is not None:
+                self._planes_done.append(sq)                 # the id came back: a new flight
             sq = self.planes[pid] = {'id': pid, 'owner': pid & 0xFFFFFFFF, 'team': team, 'params': params,
-                                     'n': None, 'track': [], 'losses': [], 'start': _r(t), 'end': None}
+                                     'n': None, 'track': [], 'losses': [], 'start': _r(t), 'end': None,
+                                     '_raw': {'mm': [], 'rw': [], 'u0': [], 'u1': []}}
         if team is not None:
             sq['team'] = team
         if params is not None:
             sq['params'] = params
         return sq
 
-    def _plane_pos(self, t, pid, x, z, y=None):
-        tr = self._plane(t, pid)['track']
-        if tr and t - tr[-1][0] < .5 and (y is None or tr[-1][3] is not None):
-            return                                          # ~2 points/s is plenty
-        tr.append([_r(t), _r(x), _r(z), None if y is None else _r(y)])
+    def _plane_pos(self, t, pid, x, z, y=None, src='mm'):
+        self._plane(t, pid)['_raw'][src or 'mm'].append((t, x, z, y))
+
+    # Squadron positions come from two kinds of message. The minimap ones (every 2 s, no height) are current:
+    # checked against where carrier torpedo bombers dropped. The waypoint ones (receive_resetWaypoints every
+    # ~0.15 s for player-flown squadrons; receive_updateSquadron's two points every ~1.4 s for every squadron)
+    # are where the squadron is heading, ~1.3 / 1.6 / 2.3 s ahead (median over the Preussen replay). Drawing
+    # them as current positions next to minimap points made consumable planes (patrol / catapult fighters,
+    # spotters, ASW) jump back and forth. So each waypoint source is shifted by the lag that best fits that
+    # squadron's own minimap points, and merged into one track.
+    WAYPOINT_LAG = {'rw': 1.3, 'u0': 1.6, 'u1': 2.3}
+
+    @staticmethod
+    def _fit_lag(points, mm, default):
+        if len(points) < 5 or len(mm) < 3:
+            return default
+        ts = [p[0] for p in mm]
+        best = None
+        for k in range(36):
+            lag, errs = k / 10, []
+            for t, x, z, _y in points[::max(1, len(points) // 150)]:
+                i = bisect.bisect_left(ts, t + lag)
+                if 0 < i < len(mm) and mm[i][0] - mm[i - 1][0] < 2.5:
+                    a, c = mm[i - 1], mm[i]
+                    f = (t + lag - a[0]) / (c[0] - a[0])
+                    errs.append(math.hypot(x - a[1] - (c[1] - a[1]) * f, z - a[2] - (c[2] - a[2]) * f))
+            if len(errs) >= 5:
+                e = sorted(errs)[len(errs) // 2]
+                if best is None or e < best[0]:
+                    best = (e, lag)
+        return best[1] if best else default
+
+    def _plane_track(self, sq):
+        raw = sq.pop('_raw')
+        mm = sorted(raw['mm'])
+        pts = []
+        for src, default in self.WAYPOINT_LAG.items():
+            lag = self._fit_lag(raw[src], mm, default)
+            pts += [(t + lag, x, z, y) for t, x, z, y in raw[src]]
+        pts.sort()
+        if pts:   # minimap only where the waypoints leave a gap (squadron not in full view)
+            ts = [p[0] for p in pts]
+            for p in mm:
+                i = bisect.bisect_left(ts, p[0])
+                near = [ts[j] for j in (i - 1, i) if 0 <= j < len(ts)]
+                if not near or min(abs(p[0] - u) for u in near) > 2.5:
+                    pts.append(p)
+            pts.sort()
+        else:
+            pts = mm
+        end = sq['end']
+        track = []
+        for t, x, z, y in pts:
+            if end is not None and t > end + .5:
+                break
+            if track and t - track[-1][0] < .3:
+                continue                                    # ~3 points/s
+            track.append([_r(t), _r(x), _r(z), None if y is None else _r(y)])
+        sq['track'] = track
+        return sq
 
     def m_Avatar_receive_addMinimapSquadron(self, t, a):
         pid, team, params, (x, z) = a[0], a[1], a[2], a[3]
@@ -403,12 +463,24 @@ class TimelineBuilder:
         sq = self._plane(t, st['planeID'], params=a['paramsID'])
         sq['n'] = st.get('numPlanes')
         x, y, z = st['position']
-        self._plane_pos(t, st['planeID'], x, z, y)
+        self._plane_pos(t, st['planeID'], x, z, y)   # current state, like the minimap
 
-    def m_Avatar_receive_updateSquadron(self, t, a):
-        if a[2]:
-            x, y, z = a[2][-1]['position']
-            self._plane_pos(t, a[0], x, z, y)
+    def m_Avatar_receive_updateSquadron(self, t, a):   # planeID, ?, [up to 2 waypoints]
+        # waypoint 'time' ~700 = an upcoming point (0.7 s of flight apart); ~0 = where the squadron is now
+        ahead = 0
+        for w in a[2] or ():
+            x, y, z = w['position']
+            if w['time'] < 200:
+                self._plane_pos(t, a[0], x, z, y)
+            elif ahead < 2:
+                self._plane_pos(t, a[0], x, z, y, ('u0', 'u1')[ahead])
+                ahead += 1
+
+    def m_Avatar_receive_resetWaypoints(self, t, a):   # planeID, [next waypoint] - player-flown squadrons
+        if a[1]:
+            w = a[1][0]
+            x, y, z = w['position']
+            self._plane_pos(t, a[0], x, z, y, None if w['time'] < 200 else 'rw')
 
     def m_Avatar_receive_removeSquadron(self, t, a):
         self.m_Avatar_receive_removeMinimapSquadron(t, a)
@@ -545,7 +617,7 @@ class TimelineBuilder:
             'fires': {str(k): v for k, v in self.fires.items()},
             'hits': self.hits,
             'explosions': self.explosions,
-            'planes': [v for v in self.planes.values() if v['track']],
+            'planes': [sq for sq in map(self._plane_track, self._planes_done + list(self.planes.values())) if sq['track']],
             'depth': {str(k): v for k, v in self.depth.items() if any(d[1] < -.5 for d in v)},
             'torpAim': {str(k): v for k, v in self.torp_aim.items()},
             'speed': {str(k): v for k, v in self.speed.items()},

@@ -458,17 +458,29 @@ function drawHits(ctx) {
   ctx.globalAlpha = 1;
 }
 // squadrons: track [[t, x, z, y | null]] between start and end; owner = planeID & 0xffffffff
+// Catmull-Rom through the track points (~0.7 s apart for consumable planes): circling fighters and spotters
+// fly arcs instead of a polygon. Gaps over 3 s (out of view) are crossed in a straight line.
+function planeXZ(tr, i, tt) {
+  if (i < 0) return [tr[0][1], tr[0][2]];
+  const p1 = tr[i], p2 = tr[Math.min(i + 1, tr.length - 1)];
+  if (p2 === p1) return [p1[1], p1[2]];
+  if (p2[0] - p1[0] > 3) { const f = Math.min(1, (tt - p1[0]) / (p2[0] - p1[0])); return [p1[1] + (p2[1] - p1[1]) * f, p1[2] + (p2[2] - p1[2]) * f]; }
+  const p0 = i > 0 && p1[0] - tr[i - 1][0] < 3 ? tr[i - 1] : p1, p3 = tr[i + 2] && tr[i + 2][0] - p2[0] < 3 ? tr[i + 2] : p2;
+  const u = Math.min(1, Math.max(0, (tt - p1[0]) / (p2[0] - p1[0]))), u2 = u * u, u3 = u2 * u;
+  const cr = k => .5 * (2 * p1[k] + (p2[k] - p0[k]) * u + (2 * p0[k] - 5 * p1[k] + 4 * p2[k] - p3[k]) * u2 + (3 * p1[k] - p0[k] - 3 * p2[k] + p3[k]) * u3);
+  return [cr(1), cr(2)];
+}
 function planeState(sq) {
   const tEnd = sq.end != null ? sq.end : sq.track[sq.track.length - 1][0] + 3;
   if (t < sq.start || t > tEnd) return null;
   const tr = sq.track, i = idxAt(tr, t);
   if (i < 0) return null;
-  const a = tr[i], b = tr[Math.min(i + 1, tr.length - 1)], f = b[0] > a[0] ? Math.min(1, (t - a[0]) / (b[0] - a[0])) : 0;
-  const x = a[1] + (b[1] - a[1]) * f, z = a[2] + (b[2] - a[2]) * f;
+  const [x, z] = planeXZ(tr, i, t), [x2, z2] = planeXZ(tr, idxAt(tr, t + .25), t + .25);
   let y = null;
   for (let k = i; k >= 0 && k > i - 40; k--) if (tr[k][3] != null) { y = tr[k][3]; break; }
   const lost = sq.losses.filter(l => l[0] <= t).reduce((n, l) => n + l[1], 0);
-  return { x, z, y: y == null ? 25 : y, hdg: Math.atan2(b[1] - a[1], b[2] - a[2]), n: sq.n != null ? Math.max(0, sq.n - lost) : null,
+  if (Math.hypot(x2 - x, z2 - z) > 1e-3) sq._hdg = Math.atan2(x2 - x, z2 - z);   // keep the last heading while hovering
+  return { x, z, y: y == null ? 25 : y, hdg: sq._hdg || 0, n: sq.n != null ? Math.max(0, sq.n - lost) : null,
            owner: byId[sq.owner] };
 }
 function drawPlanes(ctx) {
