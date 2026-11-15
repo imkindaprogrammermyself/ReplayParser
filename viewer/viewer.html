@@ -26,6 +26,21 @@
   #gl { position: absolute; inset: 0; width: 100%; height: 100%; display: block; cursor: grab; }
   #gl:active { cursor: grabbing; }
   #labels { position: absolute; inset: 0; pointer-events: none; overflow: hidden; }
+  #summary { position: absolute; inset: 10px; z-index: 15; background: rgba(11, 18, 32, .97); border: 1px solid var(--line);
+    border-radius: 8px; padding: 12px 14px; overflow: auto; font-size: 12px; }
+  #summary h3 { margin: 0 0 2px; font-size: 15px; display: flex; justify-content: space-between; align-items: center; }
+  #summary .note { color: var(--muted); margin-bottom: 8px; }
+  #summary table { width: 100%; border-collapse: collapse; }
+  #summary th, #summary td { padding: 4px 6px; text-align: right; white-space: nowrap; border-bottom: 1px solid var(--line); }
+  #summary th { color: var(--muted); font-weight: 600; cursor: pointer; position: sticky; top: -12px; background: rgb(11, 18, 32); }
+  #summary th:hover { color: var(--text); }
+  #summary th.on::after { content: ' ▾'; }
+  #summary th:nth-child(-n+2), #summary td:nth-child(-n+2) { text-align: left; }
+  #summary tbody tr { cursor: pointer; }
+  #summary tbody tr:hover { background: var(--panel-2); }
+  #summary tr.team td { color: var(--muted); font-weight: 600; text-align: left; padding-top: 10px; cursor: default; background: none; }
+  #summary tr.me td:first-child { box-shadow: inset 3px 0 var(--self); }
+  #summary td.dim { color: var(--muted); }
   #flyhint { position: absolute; left: 10px; bottom: 10px; background: rgba(11, 18, 32, .75); border: 1px solid var(--line);
     border-radius: 6px; padding: 5px 8px; font-size: 11px; color: var(--muted); pointer-events: none; }
   #flyhint b { color: var(--text); }
@@ -130,6 +145,7 @@
     <div id="heatkey" hidden></div>
     <div id="xhair" hidden><svg width="120" height="40" viewBox="-60 -20 120 40" fill="none" stroke="#f1f5f9" stroke-width="1.5"><path d="M-56 0H-12M12 0H56M0 -6V-16M0 6V16M-40 -4V4M-24 -3V3M24 -3V3M40 -4V4"/><circle r="2.2" fill="#f1f5f9" stroke="none"/></svg><span id="xrange"></span></div>
     <div id="hud"></div>
+    <div id="summary" hidden></div>
     <div id="card"></div>
     <div id="drop"><div class="box">
       <p><b>No replay data embedded.</b></p>
@@ -146,6 +162,7 @@
         <option value="10" selected>10x</option><option value="20">20x</option><option value="50">50x</option>
       </select>
       <button id="mode" title="Switch between 2D minimap and 3D view">3D</button>
+      <button id="sumbtn" title="End-of-battle results for every player">Summary</button>
       <select id="cam3d" title="3D camera" hidden>
         <option value="orbit">Orbit</option><option value="follow">Follow ship</option>
         <option value="player">Player camera</option><option value="fly">Fly</option>
@@ -1159,6 +1176,59 @@ function updateCard() {
     <div class="sec"><div class="row"><span>Damage</span><span>dealt <b>${kfmt(dealt)}</b> · taken <b>${kfmt(taken)}</b></span></div>
     ${tally ? `<div class="row"><span>Hits</span><span>${tally}</span></div>` : ''}</div>`;
 }
+// end-of-battle results per player, from what the replay recorded (damage only as far as this client saw it)
+const SUMMARY_COLS = [
+  ['ship', 'Ship'], ['dealt', 'Damage'], ['taken', 'Taken'], ['kills', 'Kills'], ['cit', 'Cit'], ['pen', 'Pen'],
+  ['over', 'Over'], ['rico', 'Rico'], ['shells', 'Shells'], ['torps', 'Torps'], ['cons', 'Consumables'],
+  ['fires', 'Fires'], ['floods', 'Floods'], ['alive', 'Survived']];
+let summarySort = 'dealt';
+function summaryRows() {
+  const last = arr => arr && arr.length ? arr[arr.length - 1][1] : 0, hitN = (id, k) => ((D._hitTimes[id] || {})[k] || []).length;
+  const shells = {}, torps = {};
+  for (const r of D.shots) if (!(r[7] & 0x8000)) shells[r[1]] = (shells[r[1]] || 0) + 1;
+  for (const r of D.torpedoes) torps[r[1]] = (torps[r[1]] || 0) + 1;
+  return ships.map(s => {
+    let fires = 0, floods = 0, prev = 0;
+    for (const [, f] of (D.fires[s.id] || [])) { const now = f & ~prev; prev = f; fires += popcount(now & 0xf); floods += popcount(now >> 4 & 3); }
+    const death = deathOf[s.id];
+    return { s, ship: `${shortShip(s.ship)} ${s.species ? s.species[0] : ''}${s.level || ''}`, dealt: last(D._dealt[s.id]),
+             taken: last(D._taken[s.id]), kills: D.deaths.filter(d => d[2] === s.id && d[1] !== s.id).length,
+             cit: hitN(s.id, 0x62), pen: hitN(s.id, 0x63), over: hitN(s.id, 0x64), rico: hitN(s.id, 0x61),
+             shells: shells[s.id] || 0, torps: torps[s.id] || 0,
+             cons: (D._cons[s.id] || []).filter(c => c[2] !== 'Hydrophone').length, fires, floods,
+             alive: death ? death[0] : D.meta.end + 1 };
+  });
+}
+function renderSummary() {
+  const el = document.getElementById('summary'), rows = summaryRows();
+  const val = (r, k) => k === 'ship' ? r.ship : r[k];
+  const sorted = list => [...list].sort((a, b) => summarySort === 'ship' ? a.ship.localeCompare(b.ship) : val(b, summarySort) - val(a, summarySort));
+  const cell = (r, k) => {
+    const v = r[k];
+    if (k === 'ship') return esc(v);
+    if (k === 'alive') return v > D.meta.end ? 'yes' : `<span class="dim">sunk ${fmt(v)}</span>`;
+    if (k === 'dealt' || k === 'taken') return v ? Math.round(v).toLocaleString() : '<span class="dim">0</span>';
+    return v ? v : '<span class="dim">0</span>';
+  };
+  const body = [['Allies', r => r.s.relation !== 'enemy'], ['Enemies', r => r.s.relation === 'enemy']].map(([label, f]) => {
+    const list = sorted(rows.filter(f));
+    return `<tr class="team"><td colspan="${SUMMARY_COLS.length + 1}">${label} · ${Math.round(list.reduce((a, r) => a + r.dealt, 0)).toLocaleString()} damage</td></tr>` +
+      list.map(r => `<tr data-id="${r.s.id}" class="${r.s.relation === 'self' ? 'me' : ''}"><td><span class="${r.s.relation}">${esc(r.s.clan ? `[${r.s.clan}] ` : '')}${esc(r.s.name)}</span></td>` +
+        SUMMARY_COLS.map(([k]) => `<td>${cell(r, k)}</td>`).join('') + '</tr>').join('');
+  }).join('');
+  el.innerHTML = `<h3><span>Battle results</span><button id="sumclose">Close</button></h3>
+    <div class="note">From this replay: damage only as far as this player's client saw it; hits only where the game reported the shell's end. Click a header to sort, a row to follow that ship.</div>
+    <table><thead><tr><th data-k="name">Player</th>${SUMMARY_COLS.map(([k, h]) => `<th data-k="${k}" class="${k === summarySort ? 'on' : ''}">${h}</th>`).join('')}</tr></thead>
+    <tbody>${body}</tbody></table>`;
+  el.querySelector('#sumclose').onclick = () => { el.hidden = true; };
+  el.querySelectorAll('th[data-k]').forEach(th => th.onclick = () => { if (th.dataset.k !== 'name') { summarySort = th.dataset.k; renderSummary(); } });
+  el.querySelectorAll('tr[data-id]').forEach(tr => tr.onclick = () => { el.hidden = true; selectShip(Number(tr.dataset.id)); });
+}
+document.getElementById('sumbtn').addEventListener('click', () => {
+  const el = document.getElementById('summary');
+  el.hidden = !el.hidden;
+  if (!el.hidden) renderSummary();
+});
 function buildSide() {
   const m = D.meta, res = m.result;
   const outcome = !res ? '' : res.winnerTeamId === m.ownTeam ? '<span class="ally">Victory</span>' :
@@ -1976,7 +2046,10 @@ document.addEventListener('keydown', e => {
   if (!D || e.target.tagName === 'INPUT' || e.target.tagName === 'SELECT') return;
   if (V3.active && V3.mode === 'fly' && e.code in FLY_KEYS) { e.preventDefault(); fly.keys.add(e.code); return; }
   if (e.code === 'Space') { e.preventDefault(); setPlaying(!playing); }
-  if (e.code === 'Escape') selectShip(null, false);
+  if (e.code === 'Escape') {   // close the results table first, else stop following
+    const sum = document.getElementById('summary');
+    if (!sum.hidden) sum.hidden = true; else selectShip(null, false);
+  }
   if (e.code === 'ArrowRight') { t = Math.min(D.meta.end, t + 5); draw(); }
   if (e.code === 'ArrowLeft') { t = Math.max(0, t - 5); draw(); }
 });
