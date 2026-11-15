@@ -14,6 +14,20 @@ MODELS = os.path.join(os.path.dirname(__file__), 'data', 'models')
 GUI = os.path.join(os.path.dirname(__file__), 'data', 'gui')
 
 
+def load_class_icons():
+    """The game's minimap class icons (gui/fla/minimap/ship_icons*/minimap_*.svg) as SVG text, by file stem.
+    White parts are tinted with the team colour in the viewer, like the game does."""
+    out = {}
+    for folder in ('ship_icons', 'ship_icons_self'):
+        d = os.path.join(GUI, 'fla', 'minimap', folder)
+        if os.path.isdir(d):
+            for name in sorted(os.listdir(d)):
+                if name.endswith('.svg'):
+                    with open(os.path.join(d, name), encoding='utf-8') as f:
+                        out[name[:-4]] = f.read()
+    return out
+
+
 def load_icons(ships):
     """The game's side icons per ship type (gui/ship_icons/<PXXX123>.png, + ship_dead_icons), as data URIs."""
     out = {}
@@ -73,6 +87,7 @@ def main(argv=None):
     data['map'] = None if args.no_map else load_map(data['meta']['map'])
     data['models'] = {} if args.no_map else load_models(data['ships'])
     data['icons'] = {} if args.no_map else load_icons(data['ships'])
+    data['classIcons'] = {} if args.no_map else load_class_icons()
     if data['map'] and data['map']['minimapBounds']:
         data['meta']['bounds'] = data['map']['minimapBounds']   # show the whole map, like the game's minimap
     payload = json.dumps(data, separators=(',', ':'), ensure_ascii=False)
