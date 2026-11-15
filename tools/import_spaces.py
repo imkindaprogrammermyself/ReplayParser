@@ -204,6 +204,13 @@ def import_space(src, name):
         return False
     G, cells = decode_terrain(src.read(f'{name}/terrain.bin'))
     spacing = CHUNK / cells
+    span = (G.shape[0] - 1) / cells               # chunks the terrain grid covers
+    if span != b['maxX'] - b['minX'] + 1 and span.is_integer() and span % 2 == 0:
+        # s02_Naval_Defense / s13_WW2_OP2 (15.10) say -9..8 but carry a 20-chunk grid; every other map's grid is
+        # centred on the origin (-n .. n-1), so place it that way (the minimap fit below checks it)
+        n = int(span) // 2
+        print(f'{name}: bounds {b} do not match the {int(span)}-chunk terrain, using -{n}..{n - 1}')
+        b = {'minX': -n, 'maxX': n - 1, 'minY': -n, 'maxY': n - 1}
     origin = b['minX'] * CHUNK
     if abs(origin + (G.shape[0] - 1) * spacing - (b['maxX'] + 1) * CHUNK) > 1e-6:
         print(f'{name}: grid size {G.shape} does not match bounds {b}, skipped')
