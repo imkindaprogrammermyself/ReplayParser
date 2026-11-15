@@ -140,7 +140,7 @@ class Library:
                 'result': None if not res else 'win' if res.get('winnerTeamId') == m.get('ownTeam')
                 else 'draw' if (res.get('winnerTeamId') or 0) < 0 else 'loss',
                 'processed': time.strftime('%Y-%m-%d %H:%M:%S'), 'seconds': round(time.time() - t0, 1), 'stamp': stamp,
-                'warnings': [] if data['map'] else ['map not imported: no minimap or terrain'],
+                'warnings': warnings_for(data),
             }
             with self.lock:
                 self.index[rid] = entry
@@ -159,6 +159,28 @@ class Library:
                 except OSError:
                     pass
 
+    def rebuild(self, rid):
+        if rid not in self.index or not os.path.isfile(self.path('replays', rid)):
+            return None
+        self._queue(rid, self.index[rid].get('file') or 'replay.wowsreplay', rebuild=True)
+        return 'queued'
+
+    def delete(self, rid):
+        """Remove a replay, its page and its library entry; False while it is being built."""
+        with self.lock:
+            if self.jobs.get(rid, {}).get('status') in ('queued', 'processing'):
+                return False
+            self.index.pop(rid, None)
+            self.jobs.pop(rid, None)
+            self.futures.pop(rid, None)
+            self._save_index()
+        for kind in ('replays', 'pages'):
+            try:
+                os.remove(self.path(kind, rid))
+            except OSError:
+                pass
+        return True
+
     def status(self, rid):
         with self.lock:
             if rid in self.jobs:
@@ -174,6 +196,19 @@ class Library:
     def listing(self):
         with self.lock:
             return sorted(self.index.values(), key=lambda e: _battle_time(e.get('dateTime')), reverse=True)
+
+
+def warnings_for(data):
+    """What is missing from a built page: the map, ship models, packets the parser skipped."""
+    out = [] if data['map'] else ['map not imported: no minimap or terrain']
+    types = {s['ship'] for s in data['ships'] if s.get('ship')}
+    missing = sorted(types - set(data['models']))
+    if missing:
+        out.append(f'{len(missing)} of {len(types)} ship types without a 3D model: {", ".join(missing[:4])}'
+                   + (' ...' if len(missing) > 4 else ''))
+    if data.get('parseErrors'):
+        out.append(f'{sum(data["parseErrors"].values())} packets could not be read')
+    return out
 
 
 def _battle_time(s):
@@ -230,8 +265,23 @@ class Handler(BaseHTTPRequestHandler):
                 return self._send(200, f.read(), 'text/html; charset=utf-8', {'Cache-Control': 'private, max-age=3600'})
         self._error(404, 'not found')
 
+    def do_DELETE(self):   # DELETE can't come from another site's page without a CORS preflight, which we don't answer
+        m = re.fullmatch(r'/api/replays/([0-9a-f]{64})', self.path.split('?', 1)[0])
+        if not m:
+            return self._error(404, 'not found')
+        if m.group(1) not in self.library.index:
+            return self._error(404, 'unknown replay')
+        if not self.library.delete(m.group(1)):
+            return self._error(409, 'still processing - try again in a moment')
+        self._send(200, {'deleted': m.group(1)})
+
     def do_POST(self):
-        if self.path.split('?', 1)[0] != '/api/upload':
+        path = self.path.split('?', 1)[0]
+        m = re.fullmatch(r'/api/replays/([0-9a-f]{64})/rebuild', path)
+        if m:
+            st = self.library.rebuild(m.group(1))
+            return self._send(202, {'id': m.group(1), 'status': st}) if st else self._error(404, 'unknown replay')
+        if path != '/api/upload':
             return self._error(404, 'not found')
         try:
             size = int(self.headers.get('Content-Length', ''))
@@ -287,6 +337,11 @@ INDEX_HTML = r'''<!doctype html>
   tbody tr:hover { background: var(--panel); }
   .win { color: var(--win); } .loss { color: var(--loss); } .muted { color: var(--muted); } .warn { color: var(--warn); }
   .empty { padding: 18px; color: var(--muted); text-align: center; }
+  td.acts { text-align: right; }
+  td.acts button { background: var(--panel-2); color: var(--text); border: 1px solid var(--line); border-radius: 6px; padding: 3px 8px;
+    font: inherit; font-size: 12px; cursor: pointer; }
+  td.acts button:hover { border-color: var(--accent); }
+  td.acts button[data-act=delete]:hover { border-color: var(--loss); color: var(--loss); }
 </style></head>
 <body><main>
   <h1>Replay Library</h1>
@@ -296,7 +351,7 @@ INDEX_HTML = r'''<!doctype html>
   <div id="jobs"></div>
   <h2>Replays <input id="q" type="search" placeholder="Filter by map, player, ship"></h2>
   <div class="table"><table><thead><tr><th>Battle</th><th>Map</th><th>Mode</th><th>Player</th><th>Ship</th><th>Result</th>
-    <th>Length</th><th>Version</th></tr></thead><tbody id="list"><tr><td colspan="8" class="empty">Loading…</td></tr></tbody></table></div>
+    <th>Length</th><th>Version</th><th></th></tr></thead><tbody id="list"><tr><td colspan="9" class="empty">Loading…</td></tr></tbody></table></div>
 </main>
 <script>
 const esc = s => String(s ?? '').replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
@@ -315,10 +370,31 @@ function render() {
     <td>${esc(r.map)}${r.warnings && r.warnings.length ? ` <span class="warn" title="${esc(r.warnings.join('; '))}">⚠</span>` : ''}</td>
     <td>${esc(r.gameType)}</td><td>${esc(r.player)}</td><td>${esc(ship(r.ship))}</td>
     <td class="${r.result || 'muted'}">${esc(r.result || '–')}</td><td>${mmss(r.duration || 0)}</td>
-    <td class="muted">${esc(r.version)}</td></tr>`).join('')
-    : `<tr><td colspan="8" class="empty">${rows.length ? 'No replay matches the filter.' : 'No replays yet - drop one above.'}</td></tr>`;
+    <td class="muted">${esc(r.version)}</td>
+    <td class="acts"><button data-act="rebuild" data-id="${r.id}" title="Build the page again with the current game data">Rebuild</button>
+      <button data-act="delete" data-id="${r.id}" title="Remove from the library">Delete</button></td></tr>`).join('')
+    : `<tr><td colspan="9" class="empty">${rows.length ? 'No replay matches the filter.' : 'No replays yet - drop one above.'}</td></tr>`;
 }
 document.getElementById('q').addEventListener('input', render);
+document.getElementById('list').addEventListener('click', async e => {
+  const b = e.target.closest('button[data-act]');
+  if (!b) return;
+  const r = rows.find(x => x.id === b.dataset.id);
+  if (b.dataset.act === 'delete') {
+    if (!confirm(`Remove ${r ? (r.map + ' · ' + (r.player || '') + ' · ' + (r.dateTime || '')) : 'this replay'} from the library?`)) return;
+    const res = await fetch('/api/replays/' + b.dataset.id, { method: 'DELETE' });
+    if (!res.ok) alert((await res.json()).error || res.statusText);
+    return loadList();
+  }
+  b.disabled = true; b.textContent = 'Rebuilding…';
+  await fetch(`/api/replays/${b.dataset.id}/rebuild`, { method: 'POST' });
+  for (;;) {
+    const st = await (await fetch('/api/jobs/' + b.dataset.id)).json();
+    if (st.status === 'done' || st.status === 'error') break;
+    await new Promise(r => setTimeout(r, 700));
+  }
+  loadList();
+});
 
 function jobRow(name) {
   const el = document.createElement('div');

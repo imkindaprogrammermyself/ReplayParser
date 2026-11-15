@@ -82,6 +82,20 @@ class ServerTests(unittest.TestCase):
         self.assertNotEqual(lib.index[rid]['processed'], 'old')
         self.assertFalse(lib.stale(rid))
 
+        st, data = self.req('POST', f'/api/replays/{rid}/rebuild', b'')   # rebuild on request
+        self.assertEqual(st, 202, data)
+        for _ in range(240):
+            if json.loads(self.req('GET', f'/api/jobs/{rid}')[1])['status'] in ('done', 'error'):
+                break
+            time.sleep(.5)
+        self.assertEqual(json.loads(self.req('GET', f'/api/jobs/{rid}')[1])['status'], 'done')
+        self.assertIsInstance(lib.index[rid]['warnings'], list)
+
+        self.assertEqual(self.req('DELETE', '/api/replays/' + 'f' * 64)[0], 404)   # delete
+        self.assertEqual(self.req('DELETE', f'/api/replays/{rid}')[0], 200)
+        self.assertEqual(json.loads(self.req('GET', '/api/replays')[1]), [])
+        self.assertEqual(self.req('GET', f'/r/{rid}')[0], 404)
+
     def test_rejects(self):
         self.assertEqual(self.upload(b'not a replay at all')[0], 415)
         self.assertEqual(self.req('GET', '/r/' + '0' * 64)[0], 404)

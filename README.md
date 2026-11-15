@@ -18,7 +18,8 @@ python -m wowsreplay.server --host 0.0.0.0  # share on your network - there is n
 
 Uploads are checked (size <= 50 MB, replay signature), stored by SHA-256 so a re-upload is instant, processed in the
 background and listed newest battle first; each opens the same page `python -m wowsreplay` writes. A replay from a game
-version that isn't imported is reported, not crashed on (see tools/update.py).
+version that isn't imported is reported, not crashed on (see tools/update.py). Pages rebuild themselves when the game data or viewer
+changes; each library row also has Rebuild and Delete, and lists what its page is missing (map, ship models).
 
 Game files, all in one (game installed on another PC): copy `tools/game_full.bat` and wowsunpack.exe (ModSDK) there,
 run `game_full.bat "C:\path\to\World_of_Warships"` (needs ~10 GB free), bring back `wows_full.zip`, then
