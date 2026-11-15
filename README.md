@@ -33,9 +33,9 @@ The ship card (top right; 'card' layer) shows the selected ship's health, speed,
 consumables, module damage (turrets, torpedoes, secondaries, AA, engine, steering) and damage/hits.
 Heatmap (2D, bottom bar): where all ships / allies / enemies / the selected ship spent time, since the start or
 over the last 2 minutes; hover the map for the time spent under the cursor.
-Aim ('aim' layer): where the selected ship's main battery points (Vehicle.targetLocalPos: bearing in 1.4 deg
-steps, range in ~178 m steps), with its range; Player camera mode in 3D adds the game-style crosshair and the
-range to where the screen centre meets the water.
+Aim ('aim' layer): where the selected ship's main battery points (Vehicle.targetLocalPos), drawn as the patch the
+real aim lies in (one 1.4 deg bearing step by one ~178 m range step). Player camera mode in 3D adds the game-style
+crosshair: range from own ship to the ship, land or water under it, held at the guns' reach.
 
 3D cameras: Orbit, Follow (own or the clicked ship), Player camera (the recorded one) and Fly - WASD move, Q/E down/up,
 drag to look, Shift for x4, mouse wheel sets the flying speed. Fly links: `#t=450&view=3d&cam=fly&pos=x,height,z&look=yaw,pitch`.

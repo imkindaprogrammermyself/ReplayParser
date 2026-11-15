@@ -895,9 +895,22 @@ const M_PER_UNIT = 30;
 function aimPoint(s, st) {
   const row = D.aim && valAt(D.aim[s.id], t, null);
   if (!row || !st) return null;
-  const v = row[1], bearing = ((v & 255) + .5) / 256 * 2 * Math.PI + Math.PI;
-  const range = ((v >> 8) + .5) * (D.meta.aimRangeStep || 5.92);
-  return { x: st.x + range * Math.sin(bearing), z: st.z + range * Math.cos(bearing), range };
+  const v = row[1], bearing = ((v & 255) + .5) / 256 * 2 * Math.PI + Math.PI, step = D.meta.aimRangeStep || 5.92;
+  const range = ((v >> 8) + .5) * step;
+  // the game sends the aim in steps: db / dr = half a bearing / range step, the patch the real point lies in
+  return { x: st.x + range * Math.sin(bearing), z: st.z + range * Math.cos(bearing), range, bearing, v,
+           db: Math.PI / 256, dr: step / 2 };
+}
+// how far this ship's main battery reaches: GameParams range or, if longer (spotter plane, upgrades), its longest
+// main-battery shell in this replay
+const _maxRange = {};
+function maxGunRange(s) {
+  if (!(s.id in _maxRange)) {
+    let m = (s.mainRange || 0) / M_PER_UNIT;
+    for (const r of D.shots) if (r[1] === s.id && !(r[7] & 0x8000)) m = Math.max(m, Math.hypot(r[4] - r[2], r[5] - r[3]));
+    _maxRange[s.id] = m;
+  }
+  return _maxRange[s.id];
 }
 const kmText = units => `${(units * M_PER_UNIT / 1000).toFixed(1)} km`;
 function aimShip() { return byId[selectedId] || ships.find(x => x.relation === 'self'); }
@@ -909,6 +922,10 @@ function drawAim(ctx) {   // where the selected ship's guns point: dashed line +
   const X0 = sx(st.x), Y0 = sy(st.z), X = sx(a.x), Y = sy(a.z), col = colorOf(s);
   ctx.save(); ctx.strokeStyle = col; ctx.globalAlpha = .55; ctx.lineWidth = 1; ctx.setLineDash([3, 4]);
   ctx.beginPath(); ctx.moveTo(X0, Y0); ctx.lineTo(X, Y); ctx.stroke(); ctx.setLineDash([]);
+  // the patch the aim really lies in: one bearing step wide, one range step deep (screen angle = bearing - 90 deg)
+  const th = a.bearing - Math.PI / 2, R0 = (a.range - a.dr) * view.scale, R1 = (a.range + a.dr) * view.scale;
+  ctx.beginPath(); ctx.arc(X0, Y0, R1, th - a.db, th + a.db); ctx.arc(X0, Y0, R0, th + a.db, th - a.db, true); ctx.closePath();
+  ctx.fillStyle = col; ctx.globalAlpha = .28; ctx.fill(); ctx.globalAlpha = .9; ctx.lineWidth = 1; ctx.stroke();
   ctx.globalAlpha = .95; ctx.lineWidth = 1.5; ctx.beginPath(); ctx.arc(X, Y, 6, 0, Math.PI * 2);
   for (const [dx, dy] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) { ctx.moveTo(X + dx * 4, Y + dy * 4); ctx.lineTo(X + dx * 10, Y + dy * 10); }
   ctx.stroke();
@@ -1176,7 +1193,7 @@ function v3Build() {
   // don't write depth (zone discs, ghost hulls) use renderOrder 2, smoke 3-4, to draw after the water
   water.renderOrder = 1;
   water.rotation.x = -Math.PI / 2; water.position.copy(V3.center); scene.add(water);
-  if (D.map && D.map.terrain) scene.add(v3Terrain(D.map.terrain));
+  if (D.map && D.map.terrain) scene.add(V3.terrainMesh = v3Terrain(D.map.terrain));
   const cells = 2 * Math.ceil(size / 200);   // 100 u grid, aligned to multiples of 100
   const grid = new THREE.GridHelper(cells * 100, cells, 0x5a7fa8, 0x2c4a6c);
   grid.material.transparent = true; grid.material.opacity = .25;
@@ -1211,6 +1228,9 @@ function v3Build() {
     }
     g.visible = false; g.renderOrder = 5; g.children.forEach(m => { m.renderOrder = 5; });
     V3.aimMark = g; V3.aimMat = mat; scene.add(g);
+    const patchMat = new THREE.MeshBasicMaterial({ side: THREE.DoubleSide, transparent: true, opacity: .35, depthWrite: false, depthTest: false });
+    V3.aimPatch = new THREE.Mesh(new THREE.BufferGeometry(), patchMat); V3.aimPatch.renderOrder = 5;
+    V3.aimPatch.visible = false; V3.aimPatchMat = patchMat; scene.add(V3.aimPatch);
   }
   // battle events: shell endings / explosions as points, smoke puffs as translucent cylinders
   V3.planePts = v3Dyn(THREE.Points, 400, new THREE.PointsMaterial({ size: 7, vertexColors: true, sizeAttenuation: false }));
@@ -1425,7 +1445,9 @@ function v3Ship(s) {
   el.className = 'lbl';
   el.innerHTML = `<span style="color:${colorOf(s)}">${esc(s.name)}</span><i><b></b></i>`;
   V3.labels.appendChild(el);
-  return { s, g, hullMat, topMat, base, trail, el, bar: el.querySelector('b'), H, L, turrets, fires, flood, rings: {} };
+  g.updateMatrixWorld(true);
+  const box = new THREE.Box3().setFromObject(g);   // ship-space box (the group is still at the origin): crosshair target
+  return { s, g, box, hullMat, topMat, base, trail, el, bar: el.querySelector('b'), H, L, turrets, fires, flood, rings: {} };
 }
 
 // Gun mounts.
@@ -1504,21 +1526,55 @@ function v3Label(el, x, y, z) {
 
 function v3Aim() {   // aim marker for the selected ship + the Player-camera crosshair with its range
   const s = aimShip(), st = s && shipState(s), a = opts.aim && st && !st.dead && !st.ghost ? aimPoint(s, st) : null;
-  V3.aimMark.visible = !!a;
-  if (a) { V3.aimMark.position.set(a.x, .6, -a.z); V3.aimMat.color.set(colorOf(s)); }
+  V3.aimMark.visible = V3.aimPatch.visible = !!a;
+  if (a) {
+    V3.aimMark.position.set(a.x, .6, -a.z); V3.aimMat.color.set(colorOf(s)); V3.aimPatchMat.color.set(colorOf(s));
+    V3.aimPatch.position.set(st.x, .65, -st.z);
+    if (V3.aimPatch.key !== a.v) {   // ring sector around the ship: theta 90 deg - bearing (map x = cos, z = sin)
+      V3.aimPatch.geometry.dispose();
+      V3.aimPatch.geometry = new THREE.RingGeometry(a.range - a.dr, a.range + a.dr, 6, 1, Math.PI / 2 - a.bearing - a.db, 2 * a.db)
+        .rotateX(-Math.PI / 2);
+      V3.aimPatch.key = a.v;
+    }
+  }
   const xh = document.getElementById('xhair'), c = valAt(D.camera, t, null);
   const on = V3.mode === 'player' && c && t - c[0] < 2;
   xh.hidden = !on;
-  if (on) {   // where the screen centre meets the water, measured from own ship
-    const me = ships.find(x => x.relation === 'self'), ms = me && shipState(me);
-    const [, cx, cy, cz, dx, dy, dz] = c;
-    let txt = '—';
-    if (dy < -1e-4 && ms) {
-      const k = -cy / dy, hx = cx + dx * k, hz = cz + dz * k;
-      txt = kmText(Math.hypot(hx - ms.x, hz - ms.z));
-    }
-    document.getElementById('xrange').textContent = txt;
+  if (on) {
+    const now = performance.now();
+    if (!V3.xhairAt || now - V3.xhairAt > 120) { V3.xhairAt = now; document.getElementById('xrange').textContent = crosshairText(c); }
   }
+}
+// the Player-camera crosshair: the camera's centre ray against terrain and other ships, else the water; range from
+// own ship, held at the guns' reach like the game (beyond it the guns aim at maximum range)
+const _ray = has3D ? new THREE.Raycaster() : null;
+function crosshairText(c) {
+  const me = ships.find(x => x.relation === 'self'), ms = me && shipState(me);
+  if (!ms) return '—';
+  const [, cx, cy, cz, dx, dy, dz] = c, n = Math.hypot(dx, dy, dz) || 1;
+  let best = dy < -1e-4 ? -cy / (dy / n) : Infinity, what = '';   // distance along the ray to the water
+  const origin = new THREE.Vector3(cx, cy, -cz), dir = new THREE.Vector3(dx / n, dy / n, -dz / n);
+  if (V3.terrainMesh) {
+    _ray.set(origin, dir); _ray.far = Math.min(best, 3000);
+    const hit = _ray.intersectObject(V3.terrainMesh, false)[0];
+    if (hit && hit.distance < best) { best = hit.distance; what = 'land'; }
+  }
+  // ships as their boxes turned with the ship: the imported hulls are mirrored (left-handed game space), so a
+  // triangle raycast passes through decks; a box is enough to say which ship the crosshair rests on
+  const local = new THREE.Ray(), inv = new THREE.Matrix4(), p = new THREE.Vector3();
+  for (const s of ships) {
+    const o = V3.ships[s.id];
+    if (s === me || !o || !o.g.visible || !o.box || o.box.isEmpty()) continue;
+    inv.copy(o.g.matrixWorld).invert();
+    local.set(origin, dir).applyMatrix4(inv);
+    if (!local.intersectBox(o.box, p)) continue;
+    const dist = p.applyMatrix4(o.g.matrixWorld).distanceTo(origin);
+    if (dist < best) { best = dist; what = s.name; }
+  }
+  if (!isFinite(best)) return '—';
+  const hx = cx + dx / n * best, hz = cz + dz / n * best, d = Math.hypot(hx - ms.x, hz - ms.z), max = maxGunRange(me);
+  if (max && d > max + 1) return `${kmText(max)} max · ${kmText(d)} away${what ? ' · ' + what : ''}`;
+  return kmText(d) + (what ? ' · ' + what : '');
 }
 function v3Update() {
   v3Aim();
