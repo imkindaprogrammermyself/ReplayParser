@@ -29,6 +29,13 @@
   #flyhint { position: absolute; left: 10px; bottom: 10px; background: rgba(11, 18, 32, .75); border: 1px solid var(--line);
     border-radius: 6px; padding: 5px 8px; font-size: 11px; color: var(--muted); pointer-events: none; }
   #flyhint b { color: var(--text); }
+  #maphint { position: absolute; left: 10px; bottom: 10px; background: rgba(11, 18, 32, .75); border: 1px solid var(--line);
+    border-radius: 6px; padding: 5px 8px; font-size: 11px; color: var(--muted); pointer-events: none; }
+  #maphint b { color: var(--text); }
+  .ship { cursor: pointer; }
+  .ship.sel { outline: 1px solid var(--self); outline-offset: -1px; }
+  #map { cursor: grab; }
+  #map.dragging { cursor: grabbing; }
   .lbl { position: absolute; transform: translate(-50%, -100%); white-space: nowrap; font-size: 11px;
     text-shadow: 0 1px 2px #000, 0 0 3px #000; text-align: center; }
   .lbl i { display: block; width: 34px; height: 3px; margin: 2px auto 0; background: rgba(0,0,0,.6); }
@@ -94,6 +101,7 @@
     <canvas id="gl" hidden></canvas>
     <div id="labels" hidden></div>
     <div id="flyhint" hidden></div>
+    <div id="maphint" hidden></div>
     <div id="hud"></div>
     <div id="drop"><div class="box">
       <p><b>No replay data embedded.</b></p>
@@ -111,7 +119,7 @@
       </select>
       <button id="mode" title="Switch between 2D minimap and 3D view">3D</button>
       <select id="cam3d" title="3D camera" hidden>
-        <option value="orbit">Orbit</option><option value="follow">Follow own ship</option>
+        <option value="orbit">Orbit</option><option value="follow">Follow ship</option>
         <option value="player">Player camera</option><option value="fly">Fly</option>
       </select>
       <select id="scale3d" title="Ship size (1x = in-game scale)" hidden>
@@ -201,10 +209,96 @@ function resize() {
   }
   if (!D || !D.meta.bounds) return;
   const r = map.getBoundingClientRect(), [x0, z0, x1, z1] = D.meta.bounds;
-  const size = Math.min(r.width, r.height) - 20;
-  view.scale = size / (x1 - x0);
-  view.ox = (r.width - size) / 2 - x0 * view.scale;
-  view.oy = (r.height - size) / 2 + z1 * view.scale;
+  view.base = (Math.min(r.width, r.height) - 20) / (x1 - x0);   // whole map in view at zoom 1
+  view.w = r.width; view.h = r.height; view.mx = (x0 + x1) / 2; view.mz = (z0 + z1) / 2;
+  applyView();
+}
+// 2D zoom / pan: the map point cam2 (cx, cz) sits in the middle of the canvas; following a ship keeps it there
+const cam2 = { zoom: 1, cx: null, cz: null, follow: false };
+function applyView() {
+  if (!view.base) return;
+  const tgt = cam2.follow && cam2.zoom > 1 && selectedId != null && byId[selectedId] ? shipState(byId[selectedId]) : null;
+  if (tgt) { cam2.cx = tgt.x; cam2.cz = tgt.z; }
+  const cx = cam2.zoom > 1 && cam2.cx != null ? cam2.cx : view.mx, cz = cam2.zoom > 1 && cam2.cz != null ? cam2.cz : view.mz;
+  view.scale = view.base * cam2.zoom;
+  view.ox = view.w / 2 - cx * view.scale;
+  view.oy = view.h / 2 + cz * view.scale;
+}
+const wx = X => (X - view.ox) / view.scale, wz = Y => (view.oy - Y) / view.scale;   // canvas -> map
+
+// selected ship: followed by the 2D map (when zoomed) and the 3D Follow camera; null = own ship / nobody
+let selectedId = null;
+function selectShip(id, opts3d = true) {
+  selectedId = id;
+  cam2.follow = id != null;
+  if (id != null && !V3.active && cam2.zoom < 2) cam2.zoom = 3;
+  if (id != null && V3.active && opts3d && V3.mode !== 'follow') setCamMode('follow');
+  const o = cam3d.querySelector('option[value="follow"]'), s = byId[id] || ships.find(x => x.relation === 'self');
+  if (o) o.textContent = s ? `Follow ${s.relation === 'self' ? 'own ship' : s.name}` : 'Follow ship';
+  document.querySelectorAll('.ship.sel').forEach(el => el.classList.remove('sel'));
+  const row = id != null && document.getElementById('row-' + id);
+  if (row) row.classList.add('sel');
+  mapHint(); draw();
+}
+function mapHint() {
+  const el = document.getElementById('maphint');
+  el.hidden = V3.active;
+  if (!el.hidden) el.innerHTML = `<b>wheel</b> zoom ×${cam2.zoom.toFixed(1)} · <b>drag</b> pan · <b>click</b> a ship to follow · <b>double-click</b> reset`
+    + (selectedId != null && byId[selectedId] ? ` · following <b>${esc(byId[selectedId].name)}</b> (Esc)` : '');
+}
+// 2D map mouse: wheel zooms about the cursor (or the followed ship), drag pans (stops following), click picks a
+// ship, double-click shows the whole map again
+let drag2 = null;
+map.addEventListener('wheel', e => {
+  if (!D) return;
+  e.preventDefault();
+  const r = map.getBoundingClientRect(), X = e.clientX - r.left, Y = e.clientY - r.top, px = wx(X), pz = wz(Y);
+  cam2.zoom = Math.max(1, Math.min(24, cam2.zoom * (e.deltaY > 0 ? 1 / 1.2 : 1.2)));
+  if (cam2.zoom === 1) { cam2.cx = cam2.cz = null; }
+  else if (!cam2.follow) {   // keep the map point under the cursor where it is
+    const k = view.base * cam2.zoom;
+    cam2.cx = px - (X - view.w / 2) / k; cam2.cz = pz + (Y - view.h / 2) / k;
+  }
+  mapHint(); draw();
+}, { passive: false });
+map.addEventListener('pointerdown', e => {
+  if (!D || e.button !== 0) return;
+  drag2 = { x: e.clientX, y: e.clientY, x0: e.clientX, y0: e.clientY, moved: false };
+  map.setPointerCapture(e.pointerId);
+});
+map.addEventListener('pointermove', e => {
+  if (!drag2) return;
+  const dx = e.clientX - drag2.x, dy = e.clientY - drag2.y;
+  drag2.x = e.clientX; drag2.y = e.clientY;
+  if (!drag2.moved && Math.hypot(e.clientX - drag2.x0, e.clientY - drag2.y0) > 4) { drag2.moved = true; map.classList.add('dragging'); }
+  if (drag2.moved && cam2.zoom > 1) {
+    if (cam2.cx == null) { cam2.cx = wx(view.w / 2); cam2.cz = wz(view.h / 2); }
+    cam2.follow = false;
+    cam2.cx -= dx / view.scale; cam2.cz += dy / view.scale;
+    draw();
+  }
+});
+map.addEventListener('pointerup', e => {
+  const d = drag2;
+  drag2 = null; map.classList.remove('dragging');
+  if (!d || d.moved) return;
+  const r = map.getBoundingClientRect();
+  const hit = pickShip(e.clientX - r.left, e.clientY - r.top, st => [sx(st.x), sy(st.z)]);
+  if (hit) selectShip(hit.id);
+});
+map.addEventListener('dblclick', () => { cam2.zoom = 1; cam2.cx = cam2.cz = null; cam2.follow = false; mapHint(); draw(); });
+
+function pickShip(X, Y, project) {   // nearest drawn ship within 16 px of a canvas point
+  let best = null, bd = 16;
+  for (const s of ships) {
+    const st = shipState(s);
+    if (!st || (st.ghost && !opts.ghosts)) continue;
+    const p = project(st);
+    if (!p) continue;
+    const d = Math.hypot(p[0] - X, p[1] - Y);
+    if (d < bd) { bd = d; best = s; }
+  }
+  return best;
 }
 const sx = x => view.ox + x * view.scale;
 const sy = z => view.oy - z * view.scale;
@@ -232,6 +326,7 @@ function draw() {
 }
 
 function draw2D() {
+  applyView();
   const ctx = mctx, r = map.getBoundingClientRect();
   ctx.clearRect(0, 0, r.width, r.height);
   const [x0, z0, x1, z1] = D.meta.bounds;
@@ -374,6 +469,10 @@ function drawShip(ctx, st) {
     else { ctx.fillStyle = col; ctx.fill(); ctx.strokeStyle = 'rgba(0,0,0,.6)'; ctx.lineWidth = 1; ctx.stroke(); }
     ctx.restore();
     ctx.globalAlpha = 1; ctx.setLineDash([]);
+  }
+  if (st.s.id === selectedId) {
+    ctx.strokeStyle = COLORS.self; ctx.lineWidth = 1.5; ctx.setLineDash([4, 3]);
+    ctx.beginPath(); ctx.arc(X, Y, r + 10, 0, Math.PI * 2); ctx.stroke(); ctx.setLineDash([]);
   }
   if (!st.dead) {
     if (st.detected) { ctx.strokeStyle = col; ctx.globalAlpha = .6; ctx.lineWidth = 1; ctx.beginPath(); ctx.arc(X, Y, r + 6, 0, Math.PI * 2); ctx.stroke(); ctx.globalAlpha = 1; }
@@ -727,6 +826,8 @@ function buildSide() {
         <div class="hits" title="shells this ship landed: citadels, penetrations, overpenetrations, ricochets"></div></div>`).join('');
   }
   document.querySelectorAll('[data-opt]').forEach(el => el.addEventListener('change', () => { opts[el.dataset.opt] = el.checked; draw(); }));
+  document.querySelectorAll('.ship[id^="row-"]').forEach(el => el.addEventListener('click', () => selectShip(Number(el.id.slice(4)))));
+  mapHint();
 }
 
 function updateSide() {
@@ -1317,7 +1418,7 @@ function v3Camera() {
     if (cam.fov !== 50) { cam.fov = 50; cam.updateProjectionMatrix(); }
     let target = orbit.target;
     if (V3.mode === 'follow') {
-      const me = ships.find(s => s.relation === 'self'), st = me && shipState(me);
+      const me = byId[selectedId] || ships.find(s => s.relation === 'self'), st = me && shipState(me);
       if (st) target = new THREE.Vector3(st.x, 0, -st.z);
     }
     const cp = Math.cos(orbit.pitch);
@@ -1331,7 +1432,7 @@ function v3Camera() {
 function v3Controls(canvas) {
   canvas.addEventListener('contextmenu', e => e.preventDefault());
   canvas.addEventListener('pointerdown', e => {
-    orbit.drag = { x: e.clientX, y: e.clientY, pan: e.button === 2 || e.shiftKey };
+    orbit.drag = { x: e.clientX, y: e.clientY, pan: e.button === 2 || e.shiftKey, x0: e.clientX, y0: e.clientY };
     canvas.setPointerCapture(e.pointerId);
   });
   canvas.addEventListener('pointermove', e => {
@@ -1353,7 +1454,17 @@ function v3Controls(canvas) {
       orbit.pitch = Math.max(.05, Math.min(1.5, orbit.pitch + dy * .005));
     }
   });
-  canvas.addEventListener('pointerup', () => { orbit.drag = null; });
+  canvas.addEventListener('pointerup', e => {
+    const d = orbit.drag;
+    orbit.drag = null;
+    if (!d || e.button !== 0 || Math.hypot(e.clientX - d.x0, e.clientY - d.y0) > 4) return;
+    const r = canvas.getBoundingClientRect(), v = new THREE.Vector3();
+    const hit = pickShip(e.clientX - r.left, e.clientY - r.top, st => {   // click a ship: follow it
+      v.set(st.x, 2, -st.z).project(V3.camera);
+      return v.z > 1 ? null : [(v.x + 1) / 2 * r.width, (1 - v.y) / 2 * r.height];
+    });
+    if (hit) selectShip(hit.id);
+  });
   canvas.addEventListener('wheel', e => {
     e.preventDefault();
     if (V3.mode === 'fly') { fly.speed = Math.max(.05, Math.min(20, fly.speed * (e.deltaY > 0 ? 1 / 1.25 : 1.25))); flyHint(); return; }
@@ -1381,7 +1492,7 @@ function setMode3D(on) {
   V3.active = on;
   map.hidden = on;
   for (const el of [document.getElementById('gl'), document.getElementById('labels'), cam3d, scale3d]) el.hidden = !on;
-  flyHint();
+  flyHint(); mapHint();
   modeBtn.textContent = on ? '2D' : '3D';
   if (on) { if (!V3.built) v3Build(); requestAnimationFrame(v3Loop); }
   else { resize(); }
@@ -1420,6 +1531,7 @@ document.addEventListener('keydown', e => {
   if (!D || e.target.tagName === 'INPUT' || e.target.tagName === 'SELECT') return;
   if (V3.active && V3.mode === 'fly' && e.code in FLY_KEYS) { e.preventDefault(); fly.keys.add(e.code); return; }
   if (e.code === 'Space') { e.preventDefault(); setPlaying(!playing); }
+  if (e.code === 'Escape') selectShip(null, false);
   if (e.code === 'ArrowRight') { t = Math.min(D.meta.end, t + 5); draw(); }
   if (e.code === 'ArrowLeft') { t = Math.max(0, t - 5); draw(); }
 });
