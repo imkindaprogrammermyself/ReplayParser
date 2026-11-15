@@ -57,6 +57,7 @@
   .ship .dm:empty { display: none; }
   .ship .dm span { opacity: .75; }
   .ship .dm .fire { color: #fb923c; font-weight: 600; }
+  .ship .dm .flood { color: #38bdf8; font-weight: 600; }
   .ship .dm .act { color: #c4b5fd; font-weight: 600; }
   .feed div { padding: 3px 0; border-bottom: 1px solid var(--line); font-size: 12px; }
   .feed .why { color: var(--muted); font-size: 11px; }
@@ -143,7 +144,7 @@ const esc = s => String(s).replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;',
 // ------------------------------------------------------------------ state
 let D, ships, byId, deathOf, t = 0, playing = false, lastFrame = 0, mapImg = null;
 const opts = { names: true, trails: true, shells: true, torps: true, planes: true, hits: true, smoke: true, consumables: true,
-               fires: true, camera: true, ghosts: true };
+               fires: true, floods: true, camera: true, ghosts: true };
 
 function load(data) {
   D = data;
@@ -318,6 +319,10 @@ function drawShip(ctx, st) {
     const n = fireCount(st.s.id);
     for (let i = 0; i < n; i++) flame(ctx, X + 15 + i * 7, Y - r - 8);
   }
+  if (opts.floods && !st.dead && !st.ghost) {   // drops left of the health bar
+    const n = floodCount(st.s.id);
+    for (let i = 0; i < n; i++) floodDrop(ctx, X - 17 - i * 7, Y - r - 8);
+  }
   const depth = depthAt(st.s.id);
   if (opts.names) {
     ctx.font = '11px system-ui'; ctx.textAlign = 'center'; ctx.textBaseline = 'top';
@@ -339,6 +344,7 @@ function drawShip(ctx, st) {
 // ------------------------------------------------------------------ battle events
 // consumables [t, vid, label, duration, range], smokes {radius, frames: [[t, [x, z, ...]]], end},
 // damage [t, victim, attacker, amount], fires {vid: [[t, burningFlags]]}, hits [t, shooter, hitType, x, z]
+// burningFlags: bits 0-3 = the hull's 4 burn nodes, bits 4-5 = its 2 flood nodes (GameParams burnNodes/floodNodes)
 const HIT_LIFE = 2.5;
 const CONS_COLORS = { Radar: '#c084fc', Hydro: '#22d3ee', 'Sub surveillance': '#38bdf8', Hydrophone: '#67e8f9',
                       Smoke: '#cbd5e1', 'Repair party': '#86efac', 'Damage control': '#fde68a' };
@@ -361,7 +367,12 @@ function activeConsumables(id) {
   return (D._cons[id] || []).filter(c => c[0] <= t && t < c[0] + c[3] && c[2] !== 'Hydrophone')
     .map(c => ({ label: c[2], range: c[4], left: c[0] + c[3] - t, start: c[0] }));
 }
-const fireCount = id => popcount((valAt(D.fires[id], t, [0, 0])[1]) || 0);
+const burnFlags = id => (valAt(D.fires[id], t, [0, 0])[1]) || 0;
+const fireCount = id => popcount(burnFlags(id) & 0xf), floodCount = id => popcount(burnFlags(id) >> 4 & 3);
+function floodDrop(ctx, x, y) {
+  ctx.fillStyle = '#38bdf8'; ctx.beginPath();
+  ctx.moveTo(x, y - 6); ctx.quadraticCurveTo(x + 4.5, y, x, y + 2); ctx.quadraticCurveTo(x - 4.5, y, x, y - 6); ctx.fill();
+}
 function flame(ctx, x, y) {
   ctx.fillStyle = '#fb923c'; ctx.beginPath();
   ctx.moveTo(x, y - 6); ctx.quadraticCurveTo(x + 4, y - 1, x, y + 2); ctx.quadraticCurveTo(x - 4, y - 1, x, y - 6); ctx.fill();
@@ -593,9 +604,10 @@ function updateSide() {
     row.classList.toggle('dead', !!dead);
     row.querySelector('.hp i').style.width = `${dead ? 0 : hp && s.maxHealth ? Math.max(0, hp[1] / s.maxHealth * 100) : 100}%`;
     const dealt = valAt(D._dealt[s.id], t, [0, 0])[1], taken = valAt(D._taken[s.id], t, [0, 0])[1];
-    const fires = fireCount(s.id), act = activeConsumables(s.id).map(c => c.label);
+    const fires = fireCount(s.id), floods = floodCount(s.id), act = activeConsumables(s.id).map(c => c.label);
     row.querySelector('.dm').innerHTML = (dealt || taken ? `dmg ${kfmt(dealt)} <span>· taken ${kfmt(taken)}</span>` : '') +
       (!dead && fires ? ` <b class="fire">fire ×${fires}</b>` : '') +
+      (!dead && floods ? ` <b class="flood">flood ×${floods}</b>` : '') +
       (!dead && act.length ? ` <b class="act">${esc(act.join(', '))}</b>` : '');
   }
   const name = id => byId[id] ? `<span class="${byId[id].relation}">${esc(byId[id].name)}</span>` : `#${id}`;
@@ -655,6 +667,8 @@ function v3Build() {
   V3.labels = document.getElementById('labels');
   V3.fireGeo = new THREE.SphereGeometry(1, 10, 8);
   V3.fireMat = new THREE.MeshBasicMaterial({ color: 0xfb923c });
+  V3.floodMat = new THREE.MeshBasicMaterial({ color: 0x38bdf8, transparent: true, opacity: .6, side: THREE.DoubleSide });
+  V3.floodGeo = new THREE.RingGeometry(.93, 1, 48);
   V3.ships = Object.fromEntries(ships.map(s => [s.id, v3Ship(s)]));
   V3.zones = D.zones.map(v3Zone);
   V3.shellPts = v3Dyn(THREE.Points, 3000, new THREE.PointsMaterial({ size: 3, vertexColors: true, sizeAttenuation: false }));
@@ -852,6 +866,8 @@ function v3Ship(s) {
   }
   const fire = new THREE.Mesh(V3.fireGeo, V3.fireMat);   // shown while any section burns
   fire.position.set(0, H * 3, 0); fire.visible = false; g.add(fire);
+  const flood = new THREE.Mesh(V3.floodGeo, V3.floodMat);   // waterline ring while any section floods
+  flood.rotation.x = -Math.PI / 2; flood.position.y = .2; flood.visible = false; g.add(flood);
   V3.scene.add(g);
   const trail = new THREE.Line(new THREE.BufferGeometry(), new THREE.LineBasicMaterial({ color: base, transparent: true, opacity: .45 }));
   trail.geometry.setAttribute('position', new THREE.BufferAttribute(new Float32Array(600 * 3), 3).setUsage(THREE.DynamicDrawUsage));
@@ -861,7 +877,7 @@ function v3Ship(s) {
   el.className = 'lbl';
   el.innerHTML = `<span style="color:${colorOf(s)}">${esc(s.name)}</span><i><b></b></i>`;
   V3.labels.appendChild(el);
-  return { s, g, hullMat, topMat, base, trail, el, bar: el.querySelector('b'), H, turrets, fire, rings: {} };
+  return { s, g, hullMat, topMat, base, trail, el, bar: el.querySelector('b'), H, L, turrets, fire, flood, rings: {} };
 }
 
 // Gun mounts.
@@ -958,6 +974,9 @@ function v3Update() {
     const nFire = opts.fires && !st.dead && !st.ghost ? fireCount(s.id) : 0;
     o.fire.visible = nFire > 0;
     if (nFire) o.fire.scale.setScalar(o.H * (.5 + .2 * nFire) * (1 + .15 * Math.sin(performance.now() / 90)));
+    const nFlood = opts.floods && !st.dead && !st.ghost ? floodCount(s.id) : 0;
+    o.flood.visible = nFlood > 0;   // pulsing ring around the hull, wider with two floods
+    if (nFlood) o.flood.scale.setScalar(o.L * (.45 + .15 * nFlood) * (1 + .08 * Math.sin(performance.now() / 160)));
     const col = st.dead ? V3.dead : o.base;
     o.hullMat.color.copy(col); o.topMat.color.copy(col).lerp(V3.dark, .45);
     o.hullMat.opacity = o.topMat.opacity = st.ghost ? .25 : 1;

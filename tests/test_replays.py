@@ -92,6 +92,18 @@ class ReplayTests(unittest.TestCase):
                 for sm in d['smokes']:
                     self.assertTrue(all(len(f[1]) % 2 == 0 for f in sm['frames']))
 
+    def test_burn_flood_bits(self):
+        """burningFlags = 4 burn nodes (bits 0-3) + 2 flood nodes (bits 4-5); a ram floods the survivor."""
+        for r, d in self.each():
+            with self.subTest(replay=os.path.basename(r)):
+                for series in d['fires'].values():
+                    self.assertTrue(all(0 <= f <= 0x3f for _, f in series))
+                died = {x[1]: x[0] for x in d['deaths']}
+                for t, dead, other, cause in d['deaths']:
+                    if cause == 'RAM' and died.get(other, 1e9) > t + 1:   # rams flood the ship that survives
+                        flags = [f for ft, f in d['fires'].get(str(other), []) if t - 1 <= ft <= t + 1]
+                        self.assertTrue(any(f >> 4 for f in flags), f'no flood on {other} after ram at {t}')
+
     def test_timeline_shapes(self):
         for r, d in self.each():
             with self.subTest(replay=os.path.basename(r)):

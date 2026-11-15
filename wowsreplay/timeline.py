@@ -94,7 +94,7 @@ class TimelineBuilder:
         self.consumables = []              # [t, vid, label, duration_s, range | None]
         self.smokes = {}                   # smoke entity -> {radius, frames: [[t, [x, z, ...]]], end}
         self.damage = []                   # [t, victim, attacker, amount]
-        self.fires = defaultdict(list)     # vid -> [t, burningFlags] (one bit per burning section)
+        self.fires = defaultdict(list)     # vid -> [t, burningFlags]: bits 0-3 burn nodes (fires), bits 4-5 flood nodes
         self.hits = []                     # [t, shooter, hitType, x, z]  shell endings (m_Avatar_receiveShotKills)
         self.explosions = []               # [t, x, z]
         self._eid = None                   # entity of the method being handled
