@@ -20,6 +20,11 @@ Uploads are checked (size <= 50 MB, replay signature), stored by SHA-256 so a re
 background and listed newest battle first; each opens the same page `python -m wowsreplay` writes. A replay from a game
 version that isn't imported is reported, not crashed on (see tools/update.py).
 
+Game files, all in one (game installed on another PC): copy `tools/game_full.bat` and wowsunpack.exe (ModSDK) there,
+run `game_full.bat "C:\path	o\World_of_Warships"` (needs ~10 GB free), bring back `wows_full.zip`, then
+`python tools/update.py import wows_full.zip` - every map, ship model and icon, once per game patch
+(regenerate the .bat with `python tools/update.py full`).
+
 Page links can jump straight to a moment: `out/my.html#t=450&view=3d&cam=follow&dist=26&pitch=1.5`.
 
 2D map: mouse wheel zooms, drag pans, double-click shows the whole map. Click a ship (on the map, in 3D or its
