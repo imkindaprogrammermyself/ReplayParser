@@ -9,6 +9,17 @@ python -m wowsreplay my.wowsreplay          # -> out/my.html   (--json t.json to
 python -m unittest discover tests           # smoke tests over the replays in this folder
 ```
 
+Web app: upload replays in the browser and keep a library of viewer pages.
+
+```
+python -m wowsreplay.server                 # http://localhost:8000/  (--port, --data server_data, --workers 2)
+python -m wowsreplay.server --host 0.0.0.0  # share on your network - there is no login, anyone who reaches it can upload
+```
+
+Uploads are checked (size <= 50 MB, replay signature), stored by SHA-256 so a re-upload is instant, processed in the
+background and listed newest battle first; each opens the same page `python -m wowsreplay` writes. A replay from a game
+version that isn't imported is reported, not crashed on (see tools/update.py).
+
 Page links can jump straight to a moment: `out/my.html#t=450&view=3d&cam=follow&dist=26&pitch=1.5`.
 
 2D map: mouse wheel zooms, drag pans, double-click shows the whole map. Click a ship (on the map, in 3D or its

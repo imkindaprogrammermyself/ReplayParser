@@ -56,15 +56,29 @@ def read_header(path) -> dict:
         return json.loads(f.read(size))
 
 
+MAX_STREAM = 256 << 20   # decompressed packet stream cap; real replays are ~3x their file size (~10 MB)
+
+
+def _inflate(data: bytes) -> bytes:
+    """zlib.decompress with a size cap, so a crafted file can't expand into gigabytes."""
+    d = zlib.decompressobj()
+    out = d.decompress(data, MAX_STREAM)
+    if d.unconsumed_tail:
+        raise ValueError(f'packet stream larger than {MAX_STREAM >> 20} MB - not a normal replay')
+    return out + d.flush()
+
+
 def read_replay(path) -> Replay:
     with open(path, 'rb') as f:
         if f.read(4) != MAGIC:
             raise ValueError(f'{path}: not a replay file (bad magic)')
         count, = struct.unpack('<I', f.read(4))
+        if not 1 <= count <= 16:
+            raise ValueError(f'{path}: not a replay file ({count} header blocks)')
         blocks = []
         for _ in range(count):
             size, = struct.unpack('<I', f.read(4))
             raw = f.read(size)
             blocks.append(json.loads(raw) if raw else None)
         payload = f.read()
-    return Replay(header=blocks[0], extra_blocks=blocks[1:], stream=zlib.decompress(_decrypt(payload)))
+    return Replay(header=blocks[0], extra_blocks=blocks[1:], stream=_inflate(_decrypt(payload)))

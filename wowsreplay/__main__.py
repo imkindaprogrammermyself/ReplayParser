@@ -100,6 +100,41 @@ def load_map(name):
     return out
 
 
+def build_data(replay_path, embed=True) -> dict:
+    """Timeline + the imported map, models and icons this battle needs (embed=False: timeline only)."""
+    data = build_timeline(replay_path)
+    data['map'] = load_map(data['meta']['map']) if embed else None
+    data['models'] = load_models(data['ships']) if embed else {}
+    data['icons'] = load_icons(data['ships']) if embed else {}
+    data['classIcons'] = load_class_icons() if embed else {}
+    data['planeIcons'] = load_plane_icons(data['planes']) if embed else {}
+    if data['map'] and data['map']['minimapBounds']:
+        data['meta']['bounds'] = data['map']['minimapBounds']   # show the whole map, like the game's minimap
+    return data
+
+
+def render_page(data: dict) -> str:
+    """The self-contained viewer page (viewer.html + three.js + the data) as HTML text."""
+    payload = json.dumps(data, separators=(',', ':'), ensure_ascii=False)
+    with open(VIEWER, encoding='utf-8') as f:
+        template = f.read()
+    if PLACEHOLDER not in template or THREE_PLACEHOLDER not in template:
+        raise RuntimeError('viewer.html is missing a placeholder')
+    with open(THREE_JS, encoding='utf-8') as f:
+        three = f.read()
+    # keep "</script>" inside embedded text from closing the script tag
+    page = template.replace(THREE_PLACEHOLDER, three.replace('</script', '<\\/script'), 1)
+    return page.replace(PLACEHOLDER, payload.replace('</', '<\\/'), 1)
+
+
+def summary(data: dict) -> str:
+    m = data['meta']
+    return (f"{m['map']} | {m['gameType']} | {m['version']} | {len(data['ships'])} ships | "
+            f"{m['end']:.0f}s | {len(data['deaths'])} deaths | {len(data['shots'])} shells | "
+            f"map data: {'yes' if data['map'] else 'no (run tools/import_spaces.py)'} | "
+            f"ship models: {len(data['models'])} of {len({s['ship'] for s in data['ships']})} types")
+
+
 def main(argv=None):
     ap = argparse.ArgumentParser(prog='python -m wowsreplay', description='WoWS replay -> minimap timeline')
     ap.add_argument('replay', help='.wowsreplay file')
@@ -108,40 +143,23 @@ def main(argv=None):
     ap.add_argument('--no-map', action='store_true', help="don't embed the imported minimap/terrain/ship models")
     args = ap.parse_args(argv)
 
-    data = build_timeline(args.replay)
-    data['map'] = None if args.no_map else load_map(data['meta']['map'])
-    data['models'] = {} if args.no_map else load_models(data['ships'])
-    data['icons'] = {} if args.no_map else load_icons(data['ships'])
-    data['classIcons'] = {} if args.no_map else load_class_icons()
-    data['planeIcons'] = {} if args.no_map else load_plane_icons(data['planes'])
-    if data['map'] and data['map']['minimapBounds']:
-        data['meta']['bounds'] = data['map']['minimapBounds']   # show the whole map, like the game's minimap
-    payload = json.dumps(data, separators=(',', ':'), ensure_ascii=False)
-
+    data = build_data(args.replay, embed=not args.no_map)
     if args.json:
+        payload = json.dumps(data, separators=(',', ':'), ensure_ascii=False)
         with open(args.json, 'w', encoding='utf-8') as f:
             f.write(payload)
         print(f'json: {args.json} ({len(payload) / 1024:.0f} KB)')
 
     html_path = args.html or os.path.join('out', os.path.splitext(os.path.basename(args.replay))[0] + '.html')
-    with open(VIEWER, encoding='utf-8') as f:
-        template = f.read()
-    if PLACEHOLDER not in template or THREE_PLACEHOLDER not in template:
-        sys.exit('viewer.html is missing a placeholder')
-    with open(THREE_JS, encoding='utf-8') as f:
-        three = f.read()
+    try:
+        page = render_page(data)
+    except RuntimeError as e:
+        sys.exit(str(e))
     os.makedirs(os.path.dirname(html_path) or '.', exist_ok=True)
     with open(html_path, 'w', encoding='utf-8') as f:
-        # keep "</script>" inside embedded text from closing the script tag
-        page = template.replace(THREE_PLACEHOLDER, three.replace('</script', '<\\/script'), 1)
-        f.write(page.replace(PLACEHOLDER, payload.replace('</', '<\\/'), 1))
+        f.write(page)
     print(f'html: {html_path}')
-
-    m = data['meta']
-    print(f"{m['map']} | {m['gameType']} | {m['version']} | {len(data['ships'])} ships | "
-          f"{m['end']:.0f}s | {len(data['deaths'])} deaths | {len(data['shots'])} shells | "
-          f"map data: {'yes' if data['map'] else 'no (run tools/import_spaces.py)'} | "
-          f"ship models: {len(data['models'])} of {len({s['ship'] for s in data['ships']})} types")
+    print(summary(data))
     if data['parseErrors']:
         print('packets skipped:', data['parseErrors'], file=sys.stderr)
 

@@ -5,6 +5,7 @@ __pycache__/
 *.wowsreplay
 replays/
 out/
+server_data/
 
 # game files pulled with wowsunpack and the data derived from them - regenerate with tools/update.py
 *.zip
