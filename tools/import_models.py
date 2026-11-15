@@ -14,6 +14,7 @@ One LOD index is used for the whole ship: the most detailed one that fits in --t
 """
 import argparse
 import base64
+import collections
 import json
 import os
 import re
@@ -29,6 +30,7 @@ from wowsreplay.geometry import read_geometry  # noqa: E402
 from wowsreplay.safe_pickle import Opaque, loads  # noqa: E402
 
 OUT = os.path.join(os.path.dirname(__file__), '..', 'wowsreplay', 'data', 'models')
+GEOM_CACHE = 400           # parsed .geometry files kept in memory (~0.5 MB each on average)
 KINDS = {'Artillery': 'main', 'ATBA': 'secondary', 'AirDefense': 'aa', 'Directors': 'director',
          'Finders': 'finder', 'AirArmament': 'catapult', 'Torpedoes': 'torpedo'}
 FLIP = np.diag([1.0, 1.0, -1.0, 1.0])     # game model space is left-handed with the bow at +z
@@ -54,7 +56,9 @@ class Builder:
         self.names = zip_index(models_zip)
         self.A = assets
         self.visuals = {}
-        self.geoms = {}
+        # parsed .geometry, least recently used dropped past GEOM_CACHE: a full import reads ~3 GB of geometry,
+        # too much to keep; ships go in name order (nation by nation), so shared guns still mostly hit the cache
+        self.geoms = collections.OrderedDict()
         self.mixed_bones = 0      # skinned render sets whose bones disagree (approximated)
 
     def visual(self, path):
@@ -67,9 +71,13 @@ class Builder:
 
     def geometry(self, gid):
         path = self.A.path(gid)
-        if path not in self.geoms:
+        if path in self.geoms:
+            self.geoms.move_to_end(path)
+        else:
             n = self.names.get(path)
             self.geoms[path] = read_geometry(self.z.read(n)) if n else None
+            while len(self.geoms) > GEOM_CACHE:
+                self.geoms.popitem(last=False)
         return self.geoms[path]
 
     def mesh(self, vpath, lod):
@@ -256,6 +264,44 @@ def fire_points(hull, frames, b: Builder):
     return out
 
 
+def export_ship(key, gp, b, tris):
+    """Write data/models/<key>.json for one ship (prints one line either way)."""
+    if key not in gp:
+        print(f'{key}: not in GameParams')
+        return
+    parts, missing = ship_layout(S(gp[key]), b)
+    if parts is None:
+        print(f'{key}: {missing}')
+        return
+    lod = 0
+    while lod < 4 and sum(b.tris(v, lod) for v, *_ in parts) > tris:
+        lod += 1
+    meshes = {}
+    out_parts = []
+    for vis, w, kind, hp in parts:
+        if vis not in meshes:
+            m = b.mesh(vis, lod)
+            if m is None:
+                continue
+            meshes[vis] = pack_mesh(*m)
+        part = {'mesh': vis, 'm': to_three(w), 'kind': kind, 'hp': hp}
+        nested = hp and re.fullmatch(r'(HP_.+?)_(HP_.+)', hp)
+        if nested:
+            part['parent'] = nested.group(1)        # turns with that mount (AA on a turret roof)
+        elif kind in ('main', 'secondary', 'torpedo'):
+            num = re.search(r'_(\d+)$', hp)
+            if num:   # shells' gunBarrelID & 31 = this - 1 (checked on Preussen: 4 main, 14 ATBA)
+                part['gun'] = int(num.group(1)) - 1
+        part.update(ship_layout.sectors.get(hp, {}))
+        out_parts.append(part)
+    total = sum(b.tris(v, lod) for v, *_ in parts)
+    with open(os.path.join(OUT, key + '.json'), 'w') as f:
+        json.dump({'ship': key, 'lod': lod, 'meshes': meshes, 'parts': out_parts, 'fires': ship_layout.fires},
+                  f, separators=(',', ':'))
+    print(f'{key}: {len(out_parts)} parts, {len(meshes)} meshes, LOD {lod}, {total} tris'
+          + (f', unplaced: {missing}' if missing else ''))
+
+
 def main(argv):
     ap = argparse.ArgumentParser()
     ap.add_argument('gamedata', help='wows_gamedata.zip (GameParams)')
@@ -283,41 +329,17 @@ def main(argv):
                     ships.append(key)
 
     os.makedirs(OUT, exist_ok=True)
-    for key in ships:
-        if key not in gp:
-            print(f'{key}: not in GameParams')
-            continue
-        parts, missing = ship_layout(S(gp[key]), b)
-        if parts is None:
-            print(f'{key}: {missing}')
-            continue
-        lod = 0
-        while lod < 4 and sum(b.tris(v, lod) for v, *_ in parts) > a.tris:
-            lod += 1
-        meshes = {}
-        out_parts = []
-        for vis, w, kind, hp in parts:
-            if vis not in meshes:
-                m = b.mesh(vis, lod)
-                if m is None:
-                    continue
-                meshes[vis] = pack_mesh(*m)
-            part = {'mesh': vis, 'm': to_three(w), 'kind': kind, 'hp': hp}
-            nested = hp and re.fullmatch(r'(HP_.+?)_(HP_.+)', hp)
-            if nested:
-                part['parent'] = nested.group(1)        # turns with that mount (AA on a turret roof)
-            elif kind in ('main', 'secondary', 'torpedo'):
-                num = re.search(r'_(\d+)$', hp)
-                if num:   # shells' gunBarrelID & 31 = this - 1 (checked on Preussen: 4 main, 14 ATBA)
-                    part['gun'] = int(num.group(1)) - 1
-            part.update(ship_layout.sectors.get(hp, {}))
-            out_parts.append(part)
-        total = sum(b.tris(v, lod) for v, *_ in parts)
-        with open(os.path.join(OUT, key + '.json'), 'w') as f:
-            json.dump({'ship': key, 'lod': lod, 'meshes': meshes, 'parts': out_parts, 'fires': ship_layout.fires},
-                      f, separators=(',', ':'))
-        print(f'{key}: {len(out_parts)} parts, {len(meshes)} meshes, LOD {lod}, {total} tris'
-              + (f', unplaced: {missing}' if missing else ''))
+    failed = []
+    for i, key in enumerate(ships, 1):
+        if len(ships) > 50:
+            print(f'[{i}/{len(ships)}] ', end='')
+        try:
+            export_ship(key, gp, b, a.tris)
+        except Exception as e:   # one odd ship (event / test vessel) must not stop a full import
+            print(f'{key}: FAILED ({type(e).__name__}: {e})')
+            failed.append(key)
+    if failed:
+        print(f'{len(failed)} ships failed: {failed[:10]}{" ..." if len(failed) > 10 else ""}')
     if b.mixed_bones:
         print(f'note: {b.mixed_bones} skinned render sets had bones with different bind frames (first one used)')
 

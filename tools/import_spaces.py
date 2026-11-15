@@ -164,42 +164,76 @@ def fit_minimap(G, origin, spacing, png):
     return half, iou
 
 
+def space_bounds(settings: str) -> dict:
+    """<bounds> chunk range from space.settings - attribute form (minX="-9") or element form (<minX> -9 </minX>)."""
+    b = {k: int(v) for k, v in re.findall(r'(min[XY]|max[XY])="(-?\d+)"', settings)}
+    for k, v in re.findall(r'<(min[XY]|max[XY])>\s*(-?\d+)\s*</\1>', settings):
+        b.setdefault(k, int(v))
+    return b
+
+
 def main(argv):
     if len(argv) != 1:
         sys.exit(__doc__)
     src = Source(argv[0])
+    done, skipped = 0, []
     for name in src.maps():
-        settings = (src.read(f'{name}/space.settings') or b'').decode('utf-8', 'replace')
-        b = {k: int(v) for k, v in re.findall(r'(min[XY]|max[XY])="(-?\d+)"', settings)}
-        if b.get('minX') != b.get('minY') or b.get('maxX') != b.get('maxY'):
-            print(f'{name}: non-square bounds {b}, skipped')
-            continue
-        G, cells = decode_terrain(src.read(f'{name}/terrain.bin'))
-        spacing = CHUNK / cells
-        origin = b['minX'] * CHUNK
-        if abs(origin + (G.shape[0] - 1) * spacing - (b['maxX'] + 1) * CHUNK) > 1e-6:
-            print(f'{name}: grid size {G.shape} does not match bounds {b}, skipped')
-            continue
+        try:
+            if import_space(src, name):
+                done += 1
+            else:
+                skipped.append(name)
+        except Exception as e:   # one odd space (test / event scene) must not stop the rest
+            print(f'{name}: FAILED ({type(e).__name__}: {e}), skipped')
+            skipped.append(name)
+    print(f'maps: {done} imported' + (f', {len(skipped)} skipped' if skipped else ''))
 
-        dst = os.path.join(OUT, name)
-        os.makedirs(dst, exist_ok=True)
-        meta = {'space': [origin, origin, (b['maxX'] + 1) * CHUNK, (b['maxY'] + 1) * CHUNK]}
-        png = src.read(f'{name}/minimap.png')
-        if png:
-            half, iou = fit_minimap(G, origin, spacing, png)
-            meta['minimap'] = [-half, -half, half, half] if half else None
-            meta['minimapFitIoU'] = round(float(iou), 3)
-            with open(os.path.join(dst, 'minimap.png'), 'wb') as f:
-                f.write(png)
 
-        g = G[::STEP, ::STEP]
-        meta['terrain'] = {'n': g.shape[0], 'x0': origin, 'z0': origin, 'step': spacing * STEP,
-                           'scale': 0.01, 'min': round(float(G.min()), 2), 'max': round(float(G.max()), 2)}
-        np.clip(np.round(g * 100), -32768, 32767).astype('<i2').tofile(os.path.join(dst, 'terrain.i16'))
-        with open(os.path.join(dst, 'map.json'), 'w') as f:
-            json.dump(meta, f, indent=1)
-        print(f"{name}: terrain {G.shape[0]}² -> {g.shape[0]}², heights {meta['terrain']['min']}..{meta['terrain']['max']}, "
-              f"minimap {meta.get('minimap')} (IoU {meta.get('minimapFitIoU')})")
+def import_space(src, name):
+    """Import one space; False (with a note) when it isn't a battle map this importer understands."""
+    if not src.read(f'{name}/minimap.png'):
+        print(f'{name}: no minimap.png (port / hangar scene, not a battle map), skipped')
+        return False
+    settings = (src.read(f'{name}/space.settings') or b'').decode('utf-8', 'replace')
+    b = space_bounds(settings)
+    if len(b) < 4:
+        print(f'{name}: no <bounds> in space.settings, skipped')
+        return False
+    if b['minX'] != b['minY'] or b['maxX'] != b['maxY']:
+        print(f'{name}: non-square bounds {b}, skipped')
+        return False
+    G, cells = decode_terrain(src.read(f'{name}/terrain.bin'))
+    spacing = CHUNK / cells
+    origin = b['minX'] * CHUNK
+    if abs(origin + (G.shape[0] - 1) * spacing - (b['maxX'] + 1) * CHUNK) > 1e-6:
+        print(f'{name}: grid size {G.shape} does not match bounds {b}, skipped')
+        return False
+
+    dst = os.path.join(OUT, name)
+    os.makedirs(dst, exist_ok=True)
+    meta = {'space': [origin, origin, (b['maxX'] + 1) * CHUNK, (b['maxY'] + 1) * CHUNK]}
+    png = src.read(f'{name}/minimap.png')
+    if png:
+        half, iou = fit_minimap(G, origin, spacing, png)
+        if not half or iou < .3:
+            # no land to match (00_CO_ocean): every map that fits (45 of 46 in 15.10) has its minimap 200 units
+            # (2 chunks) inside the space on each side
+            half, iou = (b['maxX'] + 1) * CHUNK - 200, 0.0
+            meta['minimapFrom'] = 'space minus 200 u border (no land to fit)'
+        meta['minimap'] = [-half, -half, half, half]
+        meta['minimapFitIoU'] = round(float(iou), 3)
+        with open(os.path.join(dst, 'minimap.png'), 'wb') as f:
+            f.write(png)
+
+    g = G[::STEP, ::STEP]
+    meta['terrain'] = {'n': g.shape[0], 'x0': origin, 'z0': origin, 'step': spacing * STEP,
+                       'scale': 0.01, 'min': round(float(G.min()), 2), 'max': round(float(G.max()), 2)}
+    np.clip(np.round(g * 100), -32768, 32767).astype('<i2').tofile(os.path.join(dst, 'terrain.i16'))
+    with open(os.path.join(dst, 'map.json'), 'w') as f:
+        json.dump(meta, f, indent=1)
+    print(f"{name}: terrain {G.shape[0]}² -> {g.shape[0]}², heights {meta['terrain']['min']}..{meta['terrain']['max']}, "
+          f"minimap {meta.get('minimap')} (IoU {meta.get('minimapFitIoU')})")
+    return True
 
 
 if __name__ == '__main__':
