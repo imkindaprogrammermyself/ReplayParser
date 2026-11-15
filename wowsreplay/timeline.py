@@ -17,6 +17,10 @@ from .defs import Definitions, Reader
 DATA_DIR = os.path.join(os.path.dirname(__file__), 'data')
 MINIMAP_STEP = 5000 / 2047    # minimap packs x/z into 11 bits over [-2500, 2500]
 AIM_RANGE_STEP = 5.92         # targetLocalPos high byte -> world units (median over ~8k shells, 3 replays)
+# serverSpeedRaw per knot of displayed speed, approximate (+-3%): maxServerSpeedRaw is ~26250 x base knots and
+# ~5050 x the serverSpeedRaw of ships running at that cap (Thunderer replay), so 26250 / 5050 ~ 5.2
+SPEED_RAW_PER_KNOT = 5.2
+RUDDER_FULL = math.pi / 6     # ruddersAngle at full rudder (values seen: 0, +-pi/12, +-pi/6, ...)
 
 
 def version_dir(version: tuple) -> str:
@@ -92,6 +96,8 @@ class TimelineBuilder:
         # [t, owner, x, z, dirx, dirz, end_t, end_x, end_z, end_hitType, path]: dir is per second; end from
         # receiveShotKills (None if never seen); path = [[t, x, z]] course points of maneuvering / homing torpedoes
         self.torpedoes = []
+        self.speed = defaultdict(list)     # vid -> [t, knots]  (serverSpeedRaw / SPEED_RAW_PER_KNOT, < 0 astern)
+        self.rudder = defaultdict(list)    # vid -> [t, rudder -1..1]  (ruddersAngle / 30 deg, + = starboard)
         self._torp = {}                    # (owner, shotID) -> torpedo row still running
         self.chat = []                     # [t, sender, channel, text]
         self.consumables = []              # [t, vid, label, duration_s, range | None]
@@ -207,6 +213,18 @@ class TimelineBuilder:
             series = self.depth[eid]
             if not series or abs(series[-1][1] - value) >= .05 or t - series[-1][0] > 5:
                 series.append([_r(t), _r(value, 3)])
+        elif key == ('Vehicle', 'serverSpeedRaw'):
+            # speedSignDir -1 = going astern; it can flip a tick before the speed it belongs to, so it is only
+            # read when a new speed arrives
+            v = self.values[eid]
+            series = self.speed[eid]
+            kn = _r(v.get('serverSpeedRaw', 0) / SPEED_RAW_PER_KNOT * (-1 if (v.get('speedSignDir') or 1) < 0 else 1), 1)
+            if not series or abs(series[-1][1] - kn) >= .5 or (t - series[-1][0] > 5 and series[-1][1] != kn):
+                series.append([_r(t), kn])
+        elif key == ('Vehicle', 'ruddersAngle'):
+            series, r = self.rudder[eid], _r(value / RUDDER_FULL, 2)
+            if not series or series[-1][1] != r:
+                series.append([_r(t), r])
         elif key == ('Vehicle', 'burningFlags'):
             if not self.fires[eid] or self.fires[eid][-1][1] != value:
                 self.fires[eid].append([_r(t), value])
@@ -529,6 +547,8 @@ class TimelineBuilder:
             'planes': [v for v in self.planes.values() if v['track']],
             'depth': {str(k): v for k, v in self.depth.items() if any(d[1] < -.5 for d in v)},
             'torpAim': {str(k): v for k, v in self.torp_aim.items()},
+            'speed': {str(k): v for k, v in self.speed.items()},
+            'rudder': {str(k): v for k, v in self.rudder.items()},
             'deaths': self.deaths,
             'zones': sorted(self.zones.values(), key=lambda z: (z['index'] is None, z['index'])),
             'score': self.score,

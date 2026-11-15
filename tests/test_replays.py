@@ -106,6 +106,27 @@ class ReplayTests(unittest.TestCase):
                     else:
                         self.assertTrue(all(t0 <= p[0] <= t1 + 1 for p in path))
 
+    def test_speed_matches_tracks(self):
+        """Knots from serverSpeedRaw agree with how fast the ship moves on its track (~0.09 world units/s per knot)."""
+        import bisect
+        for r, d in self.each():
+            with self.subTest(replay=os.path.basename(r)):
+                ratios = []
+                for vid, series in d['speed'].items():
+                    tr = d['tracks'].get(vid) or []
+                    ts = [p[0] for p in tr]
+                    for t, kn in series[::5]:
+                        self.assertTrue(-25 < kn < 60, kn)
+                        i = bisect.bisect_left(ts, t)
+                        if abs(kn) > 10 and 2 <= i < len(tr) - 2 and tr[i + 2][0] - tr[i - 2][0] > .3:
+                            a, b = tr[i - 2], tr[i + 2]
+                            ratios.append(math.hypot(b[1] - a[1], b[2] - a[2]) / (b[0] - a[0]) / abs(kn))
+                self.assertGreater(len(ratios), 100)
+                ratios.sort()
+                self.assertTrue(.08 < ratios[len(ratios) // 2] < .10, ratios[len(ratios) // 2])
+                for series in d['rudder'].values():
+                    self.assertTrue(all(-1.01 <= x <= 1.01 for _, x in series))
+
     def test_burn_flood_bits(self):
         """burningFlags = 4 burn nodes (bits 0-3) + 2 flood nodes (bits 4-5); a ram floods the survivor."""
         for r, d in self.each():

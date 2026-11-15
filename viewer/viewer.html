@@ -545,13 +545,21 @@ function drawLock(ctx, states) {
 // controls kind 0 = engine telegraph (sticky in game). Kind 1 (Q/E rudder lock) is not shown:
 // held A/D steering does not appear in the replay, so the lock state goes stale.
 const THROTTLE = { '-1': 'reverse', 0: 'stop', 1: '1/4', 2: '1/2', 3: '3/4', 4: 'full' };
+// speed {vid: [[t, knots]]} (approximate, see SPEED_RAW_PER_KNOT), rudder {vid: [[t, -1..1]]}, + = starboard, 1 = 30 deg
+const inAoi = id => !D.aoi[id] || D.aoi[id].some(([a0, a1]) => a0 <= t && (a1 == null || t <= a1));   // speed only updates while in AoI
+const speedAt = id => { const v = D.speed && D.speed[id] && inAoi(id) ? valAt(D.speed[id], t, null) : null; return v && v[1]; };
+const rudderAt = id => { const v = D.rudder && D.rudder[id] ? valAt(D.rudder[id], t, null) : null; return v && v[1]; };
+const rudderText = r => Math.abs(r) < .05 ? 'centred' : `${Math.round(Math.abs(r) * 30)}° ${r > 0 ? 'stbd' : 'port'}`;
 function drawHud() {
   const cam = valAt(D.camera, t, null);
   const thr = [...D.controls].reverse().find(c => c[0] <= t && c[1] === 0);
   const mode = valAt(D.viewMode, t, [0, 8])[1];
   const lock = valAt(D.targetLock, t, null);
+  const own = D.meta.ownVehicle, kn = speedAt(own), rud = rudderAt(own);
   const parts = [
     `Throttle <b>${thr ? THROTTLE[thr[2]] ?? thr[2] : '-'}</b>`,
+    ...(kn == null ? [] : [`Speed <b>${kn.toFixed(1)} kn</b>`]),
+    ...(rud == null ? [] : [`Rudder <b>${rudderText(rud)}</b>`]),
     `View <b>${mode === 5 ? 'tactical map' : cam && cam[7] < 0.5 ? 'binoculars' : 'normal'}</b>`,
   ];
   if (lock && lock[1] && byId[lock[1]]) parts.push(`Target <b>${esc(byId[lock[1]].name)}</b>`);
@@ -635,7 +643,9 @@ function updateSide() {
     row.querySelector('.hp i').style.width = `${dead ? 0 : hp && s.maxHealth ? Math.max(0, hp[1] / s.maxHealth * 100) : 100}%`;
     const dealt = valAt(D._dealt[s.id], t, [0, 0])[1], taken = valAt(D._taken[s.id], t, [0, 0])[1];
     const fires = fireCount(s.id), floods = floodCount(s.id), act = activeConsumables(s.id).map(c => c.label);
+    const kn = dead ? null : speedAt(s.id);
     row.querySelector('.dm').innerHTML = (dealt || taken ? `dmg ${kfmt(dealt)} <span>· taken ${kfmt(taken)}</span>` : '') +
+      (kn != null ? ` <span>${dealt || taken ? '· ' : ''}${Math.round(kn)} kn</span>` : '') +
       (!dead && fires ? ` <b class="fire">fire ×${fires}</b>` : '') +
       (!dead && floods ? ` <b class="flood">flood ×${floods}</b>` : '') +
       (!dead && act.length ? ` <b class="act">${esc(act.join(', '))}</b>` : '');
