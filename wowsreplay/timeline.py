@@ -351,9 +351,10 @@ class TimelineBuilder:
             self.damage.append([_r(t), self._eid, d['vehicleID'], round(d['damage'])])
 
     def m_Avatar_receiveShotKills(self, t, a):
-        # where shells ended. hitType, worked out from where they land: 0x60 | n = on a ship
-        # (n = kind of hit, not mapped), 0x40 = above water away from ships (terrain),
-        # 0x20 / 0x22 = water, 0 = expired
+        # where shells ended. hitType: 0x40 = above water away from ships (terrain), 0x20 / 0x22 = water,
+        # 0 = expired, 0x60 | n = on a ship: 0x61 ricochet, 0x62 citadel, 0x63 penetration, 0x64 overpenetration
+        # (checked against the own ship's receiveDamageStat: full / 1/3 / 1/10 / no alpha damage); 0x60 is mixed
+        # (HE shatter, AP mostly penetration damage), 0x68 / 0x70 rare and unmapped
         for pack in a[0]:
             for k in pack['kills']:
                 x, _y, z = k['pos']
