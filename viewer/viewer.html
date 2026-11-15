@@ -197,7 +197,7 @@ const esc = s => String(s).replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;',
 // ------------------------------------------------------------------ state
 let D, ships, byId, deathOf, t = 0, playing = false, lastFrame = 0, mapImg = null;
 const opts = { names: true, trails: true, shells: true, torps: true, planes: true, hits: true, smoke: true, consumables: true,
-               fires: true, floods: true, camera: true, ghosts: true, card: true, aim: true };
+               fires: true, floods: true, camera: true, ghosts: true, card: true, aim: true, paths: true };
 
 function load(data) {
   D = data;
@@ -841,7 +841,7 @@ function drawShells(ctx) {
     const [xb, zb] = shellEnd(r), col = colorOf(byId[owner]), mine = sel && owner === sel.id;
     const X = sx(xa + (xb - xa) * f), Y = sy(za + (zb - za) * f);
     ctx.strokeStyle = col; ctx.globalAlpha = mine ? .6 : .22;
-    ctx.beginPath(); ctx.moveTo(sx(xa), sy(za)); ctx.lineTo(sx(xb), sy(zb)); ctx.stroke();
+    if (opts.paths) { ctx.beginPath(); ctx.moveTo(sx(xa), sy(za)); ctx.lineTo(sx(xb), sy(zb)); ctx.stroke(); }
     ctx.globalAlpha = .9; ctx.fillStyle = col;
     ctx.beginPath(); ctx.arc(X, Y, 1.8, 0, Math.PI * 2); ctx.fill();
   }
@@ -1605,7 +1605,7 @@ function v3Update() {
       const p = at(f), q = at(Math.max(0, f - .05));
       v3Add(V3.shellPts, ...p, col);
       v3Add(V3.shellTails, ...q, col); v3Add(V3.shellTails, ...p, col);
-      for (let k = 0; k < 16; k++) {   // the whole arc, gun -> landing, until it lands
+      if (opts.paths) for (let k = 0; k < 16; k++) {   // the whole arc, gun -> landing, until it lands
         v3Add(V3.shellPath, ...at(k / 16), col); v3Add(V3.shellPath, ...at((k + 1) / 16), col);
       }
     }
