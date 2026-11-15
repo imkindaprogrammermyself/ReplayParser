@@ -26,6 +26,9 @@
   #gl { position: absolute; inset: 0; width: 100%; height: 100%; display: block; cursor: grab; }
   #gl:active { cursor: grabbing; }
   #labels { position: absolute; inset: 0; pointer-events: none; overflow: hidden; }
+  #flyhint { position: absolute; left: 10px; bottom: 10px; background: rgba(11, 18, 32, .75); border: 1px solid var(--line);
+    border-radius: 6px; padding: 5px 8px; font-size: 11px; color: var(--muted); pointer-events: none; }
+  #flyhint b { color: var(--text); }
   .lbl { position: absolute; transform: translate(-50%, -100%); white-space: nowrap; font-size: 11px;
     text-shadow: 0 1px 2px #000, 0 0 3px #000; text-align: center; }
   .lbl i { display: block; width: 34px; height: 3px; margin: 2px auto 0; background: rgba(0,0,0,.6); }
@@ -82,6 +85,7 @@
     <canvas id="map"></canvas>
     <canvas id="gl" hidden></canvas>
     <div id="labels" hidden></div>
+    <div id="flyhint" hidden></div>
     <div id="hud"></div>
     <div id="drop"><div class="box">
       <p><b>No replay data embedded.</b></p>
@@ -100,7 +104,7 @@
       <button id="mode" title="Switch between 2D minimap and 3D view">3D</button>
       <select id="cam3d" title="3D camera" hidden>
         <option value="orbit">Orbit</option><option value="follow">Follow own ship</option>
-        <option value="player">Player camera</option>
+        <option value="player">Player camera</option><option value="fly">Fly</option>
       </select>
       <select id="scale3d" title="Ship size (1x = in-game scale)" hidden>
         <option value="1" selected>Ships 1x</option><option value="2">Ships 2x</option><option value="4">Ships 4x</option>
@@ -158,7 +162,8 @@ function load(data) {
   prepTorpedoes();
   prepEvents();
   document.getElementById('drop').classList.remove('show');
-  // deep links: #t=450 (moment), &view=3d, &cam=orbit|follow|player, &dist= &pitch= &yaw= (camera)
+  // deep links: #t=450 (moment), &view=3d, &cam=orbit|follow|player|fly, &dist= &pitch= &yaw= (orbit camera),
+  // &pos=x,y,z&look=yaw,pitch (fly camera)
   const hash = new URLSearchParams(location.hash.slice(1));
   t = hash.has('t') ? Math.min(D.meta.end, Number(hash.get('t')) || 0) : 0;
   buildSide(); resize(); draw();
@@ -166,6 +171,11 @@ function load(data) {
     setMode3D(true);
     if (hash.has('cam')) setCamMode(hash.get('cam'));
     for (const k of ['dist', 'pitch', 'yaw']) if (hash.has(k)) orbit[k] = Number(hash.get(k)) || orbit[k];   // &dist=12&pitch=.6&yaw=1
+    if (V3.mode === 'fly') {
+      const pos = (hash.get('pos') || '').split(',').map(Number), look = (hash.get('look') || '').split(',').map(Number);
+      if (pos.length === 3 && pos.every(Number.isFinite)) fly.pos = { x: pos[0], y: pos[1], z: -pos[2] };   // map x, height, map z
+      if (look.length === 2 && look.every(Number.isFinite)) [fly.yaw, fly.pitch] = look;
+    }
   }
 }
 
@@ -1145,6 +1155,30 @@ function v3Events() {
   for (let i = n; i < V3.smokePool.length; i++) V3.smokePool[i].visible = false;
 }
 
+// fly camera: WASD / arrow up-down move along the view, E/Q rise/sink, Shift x4, drag to look, wheel = speed
+const FLY_KEYS = { KeyW: [0, 0, 1], ArrowUp: [0, 0, 1], KeyS: [0, 0, -1], ArrowDown: [0, 0, -1],
+                   KeyD: [1, 0, 0], KeyA: [-1, 0, 0], KeyE: [0, 1, 0], KeyQ: [0, -1, 0], ShiftLeft: null, ShiftRight: null };
+const fly = { pos: { x: 0, y: 60, z: 0 }, yaw: 0, pitch: -.35, speed: 1, keys: new Set(), last: 0 };
+function flyStep() {
+  const now = performance.now(), dt = Math.min(.1, (now - (fly.last || now)) / 1000);
+  fly.last = now;
+  let f = 0, r = 0, u = 0;
+  for (const k of fly.keys) { const v = FLY_KEYS[k]; if (v) { r += v[0]; u += v[1]; f += v[2]; } }
+  if (!f && !r && !u) return;
+  const fast = fly.keys.has('ShiftLeft') || fly.keys.has('ShiftRight') ? 4 : 1;
+  const step = V3.size * .05 * fly.speed * fast * dt;   // 1x: a map width in ~20 s
+  const cp = Math.cos(fly.pitch), sy = Math.sin(fly.yaw), cy = Math.cos(fly.yaw);
+  fly.pos.x += (-sy * cp * f + cy * r) * step;
+  fly.pos.y += (Math.sin(fly.pitch) * f + u) * step;
+  fly.pos.z += (-cy * cp * f - sy * r) * step;
+  fly.pos.y = Math.max(1, Math.min(V3.size * 1.5, fly.pos.y));    // skim the water (dived subs show through it), not into orbit
+}
+function flyHint() {
+  const el = document.getElementById('flyhint');
+  el.hidden = !(V3.active && V3.mode === 'fly');
+  if (!el.hidden) el.innerHTML = `<b>WASD</b> move · <b>Q</b>/<b>E</b> down/up · <b>drag</b> look · <b>Shift</b> fast · <b>wheel</b> speed ×${fly.speed.toFixed(2)}`;
+}
+
 function v3Camera() {
   const cam = V3.camera;
   const i = V3.mode === 'player' ? idxAt(D.camera, t) : -1;
@@ -1155,6 +1189,11 @@ function v3Camera() {
     cam.lookAt(L(1) + L(4), L(2) + L(5), -(L(3) + L(6)));
     const fov = L(7) * 180 / Math.PI;
     if (Math.abs(cam.fov - fov) > .01) { cam.fov = fov; cam.updateProjectionMatrix(); }
+  } else if (V3.mode === 'fly') {
+    if (cam.fov !== 60) { cam.fov = 60; cam.updateProjectionMatrix(); }
+    flyStep();
+    cam.position.copy(fly.pos);
+    cam.rotation.set(fly.pitch, fly.yaw, 0, 'YXZ');
   } else {
     if (cam.fov !== 50) { cam.fov = 50; cam.updateProjectionMatrix(); }
     let target = orbit.target;
@@ -1181,6 +1220,11 @@ function v3Controls(canvas) {
     if (!d || V3.mode === 'player') return;
     const dx = e.clientX - d.x, dy = e.clientY - d.y;
     d.x = e.clientX; d.y = e.clientY;
+    if (V3.mode === 'fly') {   // drag to look around
+      fly.yaw -= dx * .004;
+      fly.pitch = Math.max(-1.55, Math.min(1.55, fly.pitch - dy * .004));
+      return;
+    }
     if (d.pan && V3.mode === 'orbit') {
       const k = orbit.dist * .0016, sy = Math.sin(orbit.yaw), cy = Math.cos(orbit.yaw);
       orbit.target.x += -cy * dx * k - sy * dy * k;
@@ -1193,6 +1237,7 @@ function v3Controls(canvas) {
   canvas.addEventListener('pointerup', () => { orbit.drag = null; });
   canvas.addEventListener('wheel', e => {
     e.preventDefault();
+    if (V3.mode === 'fly') { fly.speed = Math.max(.05, Math.min(20, fly.speed * (e.deltaY > 0 ? 1 / 1.25 : 1.25))); flyHint(); return; }
     orbit.dist = Math.max(8, Math.min(V3.size * 4, orbit.dist * (e.deltaY > 0 ? 1.12 : 1 / 1.12)));
   }, { passive: false });
 }
@@ -1217,13 +1262,21 @@ function setMode3D(on) {
   V3.active = on;
   map.hidden = on;
   for (const el of [document.getElementById('gl'), document.getElementById('labels'), cam3d, scale3d]) el.hidden = !on;
+  flyHint();
   modeBtn.textContent = on ? '2D' : '3D';
   if (on) { if (!V3.built) v3Build(); requestAnimationFrame(v3Loop); }
   else { resize(); }
   draw();
 }
 function setCamMode(mode) {
+  if (mode === 'fly' && V3.mode !== 'fly' && V3.built) {   // take off from wherever the camera is now
+    const c = V3.camera, d = new THREE.Vector3();
+    c.getWorldDirection(d);
+    fly.pos = { x: c.position.x, y: c.position.y, z: c.position.z }; fly.yaw = Math.atan2(-d.x, -d.z); fly.pitch = Math.asin(Math.max(-1, Math.min(1, d.y)));
+  }
+  fly.keys.clear();
   V3.mode = cam3d.value = mode;
+  flyHint();
   if (mode === 'follow') { orbit.dist = 38; orbit.pitch = .3; }
   if (mode === 'orbit' && V3.built) { orbit.dist = V3.size * .85; orbit.pitch = .85; }
 }
@@ -1246,10 +1299,13 @@ function tick(now) {
 playBtn.addEventListener('click', () => D && setPlaying(!playing));
 document.addEventListener('keydown', e => {
   if (!D || e.target.tagName === 'INPUT' || e.target.tagName === 'SELECT') return;
+  if (V3.active && V3.mode === 'fly' && e.code in FLY_KEYS) { e.preventDefault(); fly.keys.add(e.code); return; }
   if (e.code === 'Space') { e.preventDefault(); setPlaying(!playing); }
   if (e.code === 'ArrowRight') { t = Math.min(D.meta.end, t + 5); draw(); }
   if (e.code === 'ArrowLeft') { t = Math.max(0, t - 5); draw(); }
 });
+document.addEventListener('keyup', e => fly.keys.delete(e.code));
+window.addEventListener('blur', () => fly.keys.clear());
 window.addEventListener('resize', () => { resize(); draw(); });
 
 // ------------------------------------------------------------------ loading

@@ -11,6 +11,9 @@ python -m unittest discover tests           # smoke tests over the replays in th
 
 Page links can jump straight to a moment: `out/my.html#t=450&view=3d&cam=follow&dist=26&pitch=1.5`.
 
+3D cameras: Orbit, Follow own ship, Player camera (the recorded one) and Fly - WASD move, Q/E down/up,
+drag to look, Shift for x4, mouse wheel sets the flying speed. Fly links: `#t=450&view=3d&cam=fly&pos=x,height,z&look=yaw,pitch`.
+
 ## Game data
 
 Parsing needs the entity definitions of the replay's game version (`wowsreplay/data/<version>/`).
