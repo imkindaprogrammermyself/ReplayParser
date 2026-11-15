@@ -246,28 +246,50 @@ def write_bat(maps, dirs, ships, gui=False):
 
 GUI_PATTERNS = ('gui/ship_icons/*', 'gui/ship_dead_icons/*', 'gui/*minimap*')
 FULL_BAT = os.path.join(HERE, 'game_full.bat')
-# Everything the importers read, for every ship and map: each map's terrain / settings / minimap, assets.bin and
-# the .geometry of every ship-related model folder (hulls, guns, directors, finders, radars, catapults, misc
-# fittings, caps), and the gui icons. Textures, sounds and effects stay in the game.
+# Everything the importers read, for every ship and map: each map's terrain / settings / minimap, assets.bin, the
+# .geometry of the hull folders ships use and of every gun / fitting folder (hulls, guns, directors, finders,
+# radars, catapults, misc fittings, caps), and the gui icons. Textures, sounds and effects stay in the game.
 FULL_PATTERNS = (
     [('maps', f'spaces/*/{f}') for f in ('terrain.bin', 'space.settings', 'minimap.png')]
     + [('ship models', 'content/assets.bin')]
     + [('ship models', f'content/gameplay/*/{kind}/*.geometry')
-       for kind in ('ship', 'gun', 'director', 'finder', 'radar', 'catapult', 'misc', 'cap')]
+       for kind in ('gun', 'director', 'finder', 'radar', 'catapult', 'misc', 'cap')]
     + [('gui icons', g) for g in GUI_PATTERNS])
+
+
+def used_hull_dirs():
+    """Hull model folders some ship in the newest imported GameParams uses (model_dirs.json). 988 of 1505 in 15.10:
+    the rest are camouflage / event / prototype hulls no ship points at - 2.6 GB of the 7.8 GB zip."""
+    versions = imported_versions()
+    index = load_json(versions[-1], 'model_dirs.json', default={}) if versions else {}
+    return sorted({d for dirs in index.values() for d in dirs if '/ship/' in d})
 
 
 def write_full_bat():
     """tools/game_full.bat: every map, ship model and icon the viewer can use - one big pull per game patch."""
     x = '"%UNPACK%" -x "%IDX%" -p "%PKG%" -o "%OUT%" -I "{}" >> "%LOG%" 2>&1\n'
-    lines = [HEAD.format(cmd='full', bat='game_full.bat', out='wows_full',
-                         what='Pulls everything the viewer uses for every ship and map (needs ~10 GB free).')]
+    hulls = used_hull_dirs()
+    for d in hulls:
+        if BAD_BATCH_CHARS & set(d):
+            sys.exit(f'unexpected characters in path: {d}')
+    what = ('Pulls everything the viewer uses for every map and ship (needs ~8 GB free); '
+            f'hulls: the {len(hulls)} folders ships use in the newest imported game data.' if hulls else
+            'Pulls everything the viewer uses for every map and ship (needs ~11 GB free); '
+            'all hull folders (no game data imported yet to pick the used ones).')
+    lines = [HEAD.format(cmd='full', bat='game_full.bat', out='wows_full', what=what)]
     last = None
     for step, pattern in FULL_PATTERNS:
         if step != last:
             lines.append(f'echo {step}...\n')
             last = step
         lines.append(x.format(pattern))
+    if hulls:   # after a patch, brand-new ships' hulls aren't listed: update.py import's final plan lists them
+        for i, d in enumerate(hulls, 1):
+            if i % 100 == 1:
+                lines.append(f'echo hulls {i}-{min(i + 99, len(hulls))} of {len(hulls)}...\n')
+            lines.append(x.format(d + '/*.geometry'))
+    else:
+        lines.append(x.format('content/gameplay/*/ship/*.geometry'))
     lines.append('"%UNPACK%" -l -x "%IDX%" -p "%PKG%" -I "gui/*" > "%OUT%\\gui_files.txt" 2>> "%LOG%"\n')
     lines.append(TAIL.format(out='wows_full'))
     with open(FULL_BAT, 'w', encoding='ascii', newline='\r\n') as f:
