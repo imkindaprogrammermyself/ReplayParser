@@ -822,7 +822,8 @@ const depthAt = id => D.depth && D.depth[id] ? valAt(D.depth[id], t, [0, 0])[1] 
 const kfmt = v => v >= 1000 ? `${(v / 1000).toFixed(v >= 100000 ? 0 : 1)}k` : `${v}`;
 
 // shells: [t, owner, x0, z0, x1, z1, flight_s, gun, pitch, endT, endX, endZ, endHit]. A shell flies to where it
-// really ended (receiveShotKills) or else to its aim point; the dotted line is the rest of its path.
+// really ended (receiveShotKills) or else to its aim point; its whole path (gun -> landing) is drawn as a solid
+// line / arc from firing until it lands.
 const shellEnd = r => r[9] != null ? [r[10], r[11]] : [r[4], r[5]];
 // height along the path (q = 0..1 of the ground distance): rises at the recorded launch pitch, falls a bit steeper
 // (drag), so the apex sits just past the middle. Approximate - the replay has the launch angle, not the curve.
@@ -839,9 +840,9 @@ function drawShells(ctx) {
     if (f < 0 || f > 1) continue;
     const [xb, zb] = shellEnd(r), col = colorOf(byId[owner]), mine = sel && owner === sel.id;
     const X = sx(xa + (xb - xa) * f), Y = sy(za + (zb - za) * f);
-    ctx.strokeStyle = col; ctx.globalAlpha = mine ? .75 : .3; ctx.setLineDash([1.5, 3]);
-    ctx.beginPath(); ctx.moveTo(X, Y); ctx.lineTo(sx(xb), sy(zb)); ctx.stroke();
-    ctx.setLineDash([]); ctx.globalAlpha = .9; ctx.fillStyle = col;
+    ctx.strokeStyle = col; ctx.globalAlpha = mine ? .6 : .22;
+    ctx.beginPath(); ctx.moveTo(sx(xa), sy(za)); ctx.lineTo(sx(xb), sy(zb)); ctx.stroke();
+    ctx.globalAlpha = .9; ctx.fillStyle = col;
     ctx.beginPath(); ctx.arc(X, Y, 1.8, 0, Math.PI * 2); ctx.fill();
   }
   ctx.globalAlpha = 1;
@@ -1194,7 +1195,7 @@ function v3Build() {
   V3.ships = Object.fromEntries(ships.map(s => [s.id, v3Ship(s)]));
   V3.zones = D.zones.map(v3Zone);
   V3.shellPts = v3Dyn(THREE.Points, 3000, new THREE.PointsMaterial({ size: 3, vertexColors: true, sizeAttenuation: false }));
-  V3.shellPath = v3Dyn(THREE.Points, 8000, new THREE.PointsMaterial({ size: 2, vertexColors: true, sizeAttenuation: false, transparent: true, opacity: .7 }));
+  V3.shellPath = v3Dyn(THREE.LineSegments, 12000, new THREE.LineBasicMaterial({ vertexColors: true, transparent: true, opacity: .35 }));
   V3.shellTails = v3Dyn(THREE.LineSegments, 6000, new THREE.LineBasicMaterial({ vertexColors: true, transparent: true, opacity: .55 }));
   V3.torpPts = v3Dyn(THREE.Points, 400, new THREE.PointsMaterial({ size: 4, vertexColors: true, sizeAttenuation: false }));
   V3.torpWakes = v3Dyn(THREE.LineSegments, 4000, new THREE.LineBasicMaterial({ vertexColors: true, transparent: true, opacity: .6 }));
@@ -1604,9 +1605,8 @@ function v3Update() {
       const p = at(f), q = at(Math.max(0, f - .05));
       v3Add(V3.shellPts, ...p, col);
       v3Add(V3.shellTails, ...q, col); v3Add(V3.shellTails, ...p, col);
-      for (let k = 1; k <= 14; k++) {   // dotted rest of the path
-        const u = f + (1 - f) * k / 14;
-        v3Add(V3.shellPath, ...at(u), col);
+      for (let k = 0; k < 16; k++) {   // the whole arc, gun -> landing, until it lands
+        v3Add(V3.shellPath, ...at(k / 16), col); v3Add(V3.shellPath, ...at((k + 1) / 16), col);
       }
     }
   }
