@@ -1,0 +1,14 @@
+__pycache__/
+*.pyc
+
+# your replays and the pages made from them (player names; pages embed Wargaming models/minimaps)
+*.wowsreplay
+replays/
+out/
+
+# game files pulled with wowsunpack and the data derived from them - regenerate with tools/update.py
+*.zip
+wows_*/
+wowsreplay/data/maps/
+wowsreplay/data/models/
+tools/game_update.bat

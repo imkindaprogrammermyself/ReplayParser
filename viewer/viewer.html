@@ -1,0 +1,1203 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Replay Minimap</title>
+<style>
+  :root {
+    --bg: #0b1220; --panel: #111a2c; --panel-2: #16223a; --line: #23314f;
+    --text: #dbe4f3; --muted: #8394b4; --water: #0e2238; --grid: rgba(140, 170, 210, .08);
+    --self: #ffd166; --ally: #4ade80; --enemy: #f87171; --neutral: #9aa7bd;
+    --camera: rgba(255, 209, 102, .9);
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; height: 100%; background: var(--bg); color: var(--text);
+    font: 13px/1.35 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; }
+  #app { display: grid; grid-template-columns: minmax(0, 1fr) 320px; grid-template-rows: minmax(0, 1fr) auto;
+    height: 100vh; gap: 10px; padding: 10px; }
+  #stage { position: relative; min-height: 0; background: var(--panel); border: 1px solid var(--line); border-radius: 8px; }
+  #map { position: absolute; inset: 0; width: 100%; height: 100%; display: block; }
+  #side { grid-row: 1 / span 2; grid-column: 2; overflow: auto; background: var(--panel);
+    border: 1px solid var(--line); border-radius: 8px; padding: 12px; }
+  #bar { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 8px 10px;
+    display: grid; grid-template-columns: auto minmax(0, 1fr) auto; gap: 10px; align-items: center; }
+  .ctl { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; max-width: 330px; }
+  #gl { position: absolute; inset: 0; width: 100%; height: 100%; display: block; cursor: grab; }
+  #gl:active { cursor: grabbing; }
+  #labels { position: absolute; inset: 0; pointer-events: none; overflow: hidden; }
+  .lbl { position: absolute; transform: translate(-50%, -100%); white-space: nowrap; font-size: 11px;
+    text-shadow: 0 1px 2px #000, 0 0 3px #000; text-align: center; }
+  .lbl i { display: block; width: 34px; height: 3px; margin: 2px auto 0; background: rgba(0,0,0,.6); }
+  .lbl i b { display: block; height: 100%; }
+  .lbl.faded { opacity: .45; }
+  .lbl.zone { font: bold 18px system-ui; transform: translate(-50%, -50%); }
+  [hidden] { display: none !important; }
+  button, select { background: var(--panel-2); color: var(--text); border: 1px solid var(--line);
+    border-radius: 6px; padding: 5px 10px; font: inherit; cursor: pointer; }
+  button:hover { border-color: #3b4f7a; }
+  #timeline { width: 100%; height: 56px; display: block; cursor: pointer; }
+  #clock { font-variant-numeric: tabular-nums; min-width: 120px; text-align: right; color: var(--muted); }
+  #clock b { color: var(--text); font-size: 15px; }
+  h1 { font-size: 15px; margin: 0 0 2px; }
+  h2 { font-size: 11px; text-transform: uppercase; letter-spacing: .08em; color: var(--muted); margin: 14px 0 6px; }
+  .sub { color: var(--muted); font-size: 12px; }
+  .score { display: grid; grid-template-columns: auto 1fr auto; gap: 8px; align-items: center; margin-top: 10px; }
+  .score b { font-size: 18px; font-variant-numeric: tabular-nums; }
+  .scorebar { height: 8px; background: var(--panel-2); border-radius: 4px; position: relative; overflow: hidden; }
+  .scorebar i { position: absolute; top: 0; bottom: 0; }
+  .ship { display: grid; grid-template-columns: 1fr auto; gap: 2px 8px; padding: 5px 6px; border-radius: 6px; }
+  .ship.dead { opacity: .4; }
+  .ship.me { background: rgba(255, 209, 102, .08); }
+  .ship .nm { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .ship .cls { color: var(--muted); font-size: 11px; text-align: right; }
+  .hp { grid-column: 1 / span 2; height: 4px; background: var(--panel-2); border-radius: 2px; overflow: hidden; }
+  .hp i { display: block; height: 100%; }
+  .ship .dm { grid-column: 1 / span 2; font-size: 11px; color: var(--muted); min-height: 0; }
+  .ship .dm:empty { display: none; }
+  .ship .dm span { opacity: .75; }
+  .ship .dm .fire { color: #fb923c; font-weight: 600; }
+  .ship .dm .act { color: #c4b5fd; font-weight: 600; }
+  .feed div { padding: 3px 0; border-bottom: 1px solid var(--line); font-size: 12px; }
+  .feed .why { color: var(--muted); font-size: 11px; }
+  .toggles { display: flex; flex-wrap: wrap; gap: 4px 10px; }
+  .toggles label { display: flex; gap: 4px; align-items: center; color: var(--muted); cursor: pointer; }
+  #hud { position: absolute; left: 10px; top: 10px; background: rgba(11, 18, 32, .75); border: 1px solid var(--line);
+    border-radius: 6px; padding: 6px 8px; font-size: 12px; color: var(--muted); pointer-events: none; }
+  #hud b { color: var(--text); }
+  #drop { position: absolute; inset: 0; display: none; place-items: center; text-align: center; color: var(--muted); }
+  #drop.show { display: grid; }
+  #drop .box { border: 2px dashed var(--line); border-radius: 10px; padding: 30px 40px; }
+  .ally { color: var(--ally); } .enemy { color: var(--enemy); } .self { color: var(--self); }
+  @media (max-width: 860px) {
+    #app { grid-template-columns: 1fr; grid-template-rows: 60vh auto auto; height: auto; }
+    #side { grid-row: auto; grid-column: auto; }
+  }
+</style>
+</head>
+<body>
+<div id="app">
+  <div id="stage">
+    <canvas id="map"></canvas>
+    <canvas id="gl" hidden></canvas>
+    <div id="labels" hidden></div>
+    <div id="hud"></div>
+    <div id="drop"><div class="box">
+      <p><b>No replay data embedded.</b></p>
+      <p>Drop a timeline <code>.json</code> here, or <input type="file" id="file" accept=".json"></p>
+      <p class="sub">Make one with <code>python -m wowsreplay REPLAY --json out.json</code></p>
+    </div></div>
+  </div>
+  <aside id="side"></aside>
+  <div id="bar">
+    <div class="ctl">
+      <button id="play" title="Space">Play</button>
+      <select id="speed" title="Playback speed">
+        <option value="1">1x</option><option value="2">2x</option><option value="5">5x</option>
+        <option value="10" selected>10x</option><option value="20">20x</option><option value="50">50x</option>
+      </select>
+      <button id="mode" title="Switch between 2D minimap and 3D view">3D</button>
+      <select id="cam3d" title="3D camera" hidden>
+        <option value="orbit">Orbit</option><option value="follow">Follow own ship</option>
+        <option value="player">Player camera</option>
+      </select>
+      <select id="scale3d" title="Ship size (1x = in-game scale)" hidden>
+        <option value="1" selected>Ships 1x</option><option value="2">Ships 2x</option><option value="4">Ships 4x</option>
+      </select>
+    </div>
+    <canvas id="timeline"></canvas>
+    <div id="clock"></div>
+  </div>
+</div>
+<script>/*__THREE_JS__*/</script>
+<script>
+const EMBEDDED = /*__REPLAY_DATA__*/null;
+
+// ------------------------------------------------------------------ helpers
+const css = name => getComputedStyle(document.documentElement).getPropertyValue(name).trim();
+const COLORS = { self: css('--self'), ally: css('--ally'), enemy: css('--enemy'), neutral: css('--neutral') };
+const SHOT_LIFE_MAX = 30, TORP_LIFE = 40, TRAIL = 30, STALE = 2.5;
+
+// last index with arr[i][0] <= t, or -1
+function idxAt(arr, t) {
+  let lo = 0, hi = arr.length - 1, res = -1;
+  while (lo <= hi) { const m = (lo + hi) >> 1; if (arr[m][0] <= t) { res = m; lo = m + 1; } else hi = m - 1; }
+  return res;
+}
+const valAt = (arr, t, dflt) => { const i = arr ? idxAt(arr, t) : -1; return i < 0 ? dflt : arr[i]; };
+function lerpAngle(a, b, f) { let d = b - a; while (d > Math.PI) d -= 2 * Math.PI; while (d < -Math.PI) d += 2 * Math.PI; return a + d * f; }
+// interpolated [x, z, yaw, sampleTime] at t from a [t, x, z, yaw] series
+function sample(series, t) {
+  if (!series || !series.length) return null;
+  const i = idxAt(series, t);
+  if (i < 0) return null;
+  const a = series[i], b = series[i + 1];
+  if (!b || b[0] - a[0] > STALE) return [a[1], a[2], a[3], a[0]];
+  const f = (t - a[0]) / (b[0] - a[0]);
+  return [a[1] + (b[1] - a[1]) * f, a[2] + (b[2] - a[2]) * f, lerpAngle(a[3], b[3], f), t];
+}
+const fmt = s => { s = Math.max(0, Math.round(s)); return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}`; };
+const shortShip = s => (s || '').replace(/^P[A-Z]{3}\d+_/, '').replace(/_/g, ' ');
+const esc = s => String(s).replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+
+// ------------------------------------------------------------------ state
+let D, ships, byId, deathOf, t = 0, playing = false, lastFrame = 0, mapImg = null;
+const opts = { names: true, trails: true, shells: true, torps: true, planes: true, hits: true, smoke: true, consumables: true,
+               fires: true, camera: true, ghosts: true };
+
+function load(data) {
+  D = data;
+  ships = D.ships;
+  mapImg = null;
+  if (D.map && D.map.minimap) { mapImg = new Image(); mapImg.onload = () => draw(); mapImg.src = D.map.minimap; }
+  byId = Object.fromEntries(ships.map(s => [s.id, s]));
+  deathOf = Object.fromEntries(D.deaths.map(d => [d[1], d]));
+  D.shots.sort((a, b) => a[0] - b[0]);
+  D.torpedoes.sort((a, b) => a[0] - b[0]);
+  prepEvents();
+  document.getElementById('drop').classList.remove('show');
+  // deep links: #t=450 (moment), &view=3d, &cam=orbit|follow|player, &dist= &pitch= &yaw= (camera)
+  const hash = new URLSearchParams(location.hash.slice(1));
+  t = hash.has('t') ? Math.min(D.meta.end, Number(hash.get('t')) || 0) : 0;
+  buildSide(); resize(); draw();
+  if (hash.get('view') === '3d') {
+    setMode3D(true);
+    if (hash.has('cam')) setCamMode(hash.get('cam'));
+    for (const k of ['dist', 'pitch', 'yaw']) if (hash.has(k)) orbit[k] = Number(hash.get(k)) || orbit[k];   // &dist=12&pitch=.6&yaw=1
+  }
+}
+
+// ------------------------------------------------------------------ map canvas
+const map = document.getElementById('map'), mctx = map.getContext('2d');
+const tl = document.getElementById('timeline'), tctx = tl.getContext('2d');
+let view = { ox: 0, oy: 0, scale: 1 };
+
+function resize() {
+  const dpr = window.devicePixelRatio || 1;
+  for (const c of [map, tl]) {
+    const r = c.getBoundingClientRect();
+    c.width = Math.max(1, r.width * dpr); c.height = Math.max(1, r.height * dpr);
+    c.getContext('2d').setTransform(dpr, 0, 0, dpr, 0, 0);
+  }
+  if (!D || !D.meta.bounds) return;
+  const r = map.getBoundingClientRect(), [x0, z0, x1, z1] = D.meta.bounds;
+  const size = Math.min(r.width, r.height) - 20;
+  view.scale = size / (x1 - x0);
+  view.ox = (r.width - size) / 2 - x0 * view.scale;
+  view.oy = (r.height - size) / 2 + z1 * view.scale;
+}
+const sx = x => view.ox + x * view.scale;
+const sy = z => view.oy - z * view.scale;
+const colorOf = s => COLORS[s ? s.relation : 'neutral'];
+const teamColor = team => team < 0 || team == null ? COLORS.neutral : team === D.meta.ownTeam ? COLORS.ally : COLORS.enemy;
+
+function shipShape(ctx, species, r) {
+  ctx.beginPath();
+  switch (species) {
+    case 'Destroyer': ctx.moveTo(0, -r * 1.3); ctx.lineTo(r * .55, r); ctx.lineTo(-r * .55, r); break;
+    case 'Battleship': ctx.moveTo(0, -r * 1.4); ctx.lineTo(r, -r * .2); ctx.lineTo(r * .8, r); ctx.lineTo(-r * .8, r); ctx.lineTo(-r, -r * .2); break;
+    case 'AirCarrier': ctx.rect(-r * .8, -r * 1.2, r * 1.6, r * 2.4); break;
+    case 'Submarine': ctx.ellipse(0, 0, r * .6, r * 1.2, 0, 0, Math.PI * 2); break;
+    default: ctx.moveTo(0, -r * 1.35); ctx.lineTo(r * .85, r); ctx.lineTo(0, r * .55); ctx.lineTo(-r * .85, r);
+  }
+  ctx.closePath();
+}
+
+function draw() {
+  if (!D) return;
+  if (!V3.active) draw2D();   // the 3D view renders in its own animation loop
+  drawHud();
+  drawTimeline();
+  updateSide();
+}
+
+function draw2D() {
+  const ctx = mctx, r = map.getBoundingClientRect();
+  ctx.clearRect(0, 0, r.width, r.height);
+  const [x0, z0, x1, z1] = D.meta.bounds;
+
+  // water + grid (100 u)
+  ctx.fillStyle = css('--water');
+  ctx.fillRect(sx(x0), sy(z1), (x1 - x0) * view.scale, (z1 - z0) * view.scale);
+  if (mapImg && mapImg.complete && mapImg.naturalWidth) {   // game minimap: islands on transparent water, top = +z
+    const [a, b, c, d] = D.map.minimapBounds;
+    ctx.drawImage(mapImg, sx(a), sy(d), (c - a) * view.scale, (d - b) * view.scale);
+  }
+  ctx.strokeStyle = css('--grid'); ctx.lineWidth = 1; ctx.beginPath();
+  for (let g = Math.ceil(x0 / 100) * 100; g <= x1; g += 100) { ctx.moveTo(sx(g), sy(z0)); ctx.lineTo(sx(g), sy(z1)); }
+  for (let g = Math.ceil(z0 / 100) * 100; g <= z1; g += 100) { ctx.moveTo(sx(x0), sy(g)); ctx.lineTo(sx(x1), sy(g)); }
+  ctx.stroke();
+
+  drawZones(ctx);
+  if (opts.smoke) drawSmoke(ctx);
+  if (opts.shells) drawShells(ctx);
+  if (opts.torps) drawTorpedoes(ctx);
+  if (opts.hits) drawHits(ctx);
+  if (opts.planes) drawPlanes(ctx);
+  const states = ships.map(s => shipState(s));
+  if (opts.trails) states.forEach(st => st && drawTrail(ctx, st));
+  drawLock(ctx, states);
+  if (opts.consumables) states.forEach(st => st && drawConsumableRings(ctx, st));
+  states.forEach(st => st && drawShip(ctx, st));
+  if (opts.camera) drawCamera(ctx);
+}
+
+function drawZones(ctx) {
+  for (const z of D.zones) {
+    const owner = valAt(z.team, t, [0, -1])[1];
+    const [, progress, invader] = valAt(z.capture, t, [0, 0, -1]);
+    const R = z.radius * view.scale, X = sx(z.x), Y = sy(z.z), col = teamColor(owner);
+    ctx.globalAlpha = .14; ctx.fillStyle = col; ctx.beginPath(); ctx.arc(X, Y, R, 0, Math.PI * 2); ctx.fill();
+    ctx.globalAlpha = .7; ctx.strokeStyle = col; ctx.lineWidth = 1.5; ctx.stroke();
+    if (invader >= 0 && progress > 0) {
+      ctx.globalAlpha = 1; ctx.strokeStyle = teamColor(invader); ctx.lineWidth = 4;
+      ctx.beginPath(); ctx.arc(X, Y, R + 3, -Math.PI / 2, -Math.PI / 2 + progress * Math.PI * 2); ctx.stroke();
+    }
+    ctx.globalAlpha = .9; ctx.fillStyle = col; ctx.font = 'bold 16px system-ui'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+    ctx.fillText(z.index != null ? 'ABCDEFGH'[z.index] : '?', X, Y);
+    ctx.globalAlpha = 1;
+  }
+}
+
+// where a ship is at time t, and how much we trust it
+function shipState(s) {
+  const death = deathOf[s.id];
+  const tEnd = death && t >= death[0] ? death[0] : t;
+  const a = sample(D.tracks[s.id], tEnd), m = sample(D.minimap[s.id], tEnd);
+  let p = a && (!m || a[3] >= m[3] - 0.5) ? a : m;
+  if (!p) return null;
+  const dead = !!death && t >= death[0];
+  const fresh = tEnd - p[3] <= STALE;
+  let visible = true;
+  if (s.relation === 'enemy') {
+    const spans = D.aoi[s.id] || [];
+    visible = spans.some(([a0, a1]) => a0 <= t && (a1 == null || t <= a1)) || (m && tEnd - m[3] <= STALE);
+  }
+  const detected = s.relation !== 'enemy' && (valAt(D.detected[s.id], t, [0, 0])[1] || 0) !== 0;
+  const hpRow = valAt(D.health[s.id], t, null);
+  return { s, x: p[0], z: p[1], yaw: p[2], dead, ghost: !dead && (!visible || !fresh), detected,
+           hp: hpRow ? hpRow[1] : s.maxHealth };
+}
+
+function drawTrail(ctx, st) {
+  const tr = D.tracks[st.s.id];
+  if (!tr || st.ghost) return;
+  const i1 = idxAt(tr, Math.min(t, st.dead ? deathOf[st.s.id][0] : t)), i0 = Math.max(0, idxAt(tr, t - TRAIL));
+  if (i1 <= i0) return;
+  ctx.strokeStyle = colorOf(st.s); ctx.lineWidth = 1.5;
+  for (let i = i0 + 1; i <= i1; i++) {
+    if (tr[i][0] - tr[i - 1][0] > STALE) continue;
+    ctx.globalAlpha = .45 * (1 - (t - tr[i][0]) / TRAIL);
+    ctx.beginPath(); ctx.moveTo(sx(tr[i - 1][1]), sy(tr[i - 1][2])); ctx.lineTo(sx(tr[i][1]), sy(tr[i][2])); ctx.stroke();
+  }
+  ctx.globalAlpha = 1;
+}
+
+function drawShip(ctx, st) {
+  if (st.ghost && !opts.ghosts) return;
+  const X = sx(st.x), Y = sy(st.z), col = colorOf(st.s), r = st.s.relation === 'self' ? 8 : 7;
+  if (st.dead) {
+    ctx.strokeStyle = col; ctx.globalAlpha = .55; ctx.lineWidth = 2; ctx.beginPath();
+    ctx.moveTo(X - 6, Y - 6); ctx.lineTo(X + 6, Y + 6); ctx.moveTo(X + 6, Y - 6); ctx.lineTo(X - 6, Y + 6); ctx.stroke();
+    ctx.globalAlpha = 1;
+  } else {
+    ctx.save(); ctx.translate(X, Y); ctx.rotate(st.yaw);
+    shipShape(ctx, st.s.species, r);
+    if (st.ghost) { ctx.globalAlpha = .45; ctx.setLineDash([3, 3]); ctx.strokeStyle = col; ctx.lineWidth = 1.5; ctx.stroke(); }
+    else { ctx.fillStyle = col; ctx.fill(); ctx.strokeStyle = 'rgba(0,0,0,.6)'; ctx.lineWidth = 1; ctx.stroke(); }
+    ctx.restore();
+    ctx.globalAlpha = 1; ctx.setLineDash([]);
+    if (st.detected) { ctx.strokeStyle = col; ctx.globalAlpha = .6; ctx.lineWidth = 1; ctx.beginPath(); ctx.arc(X, Y, r + 6, 0, Math.PI * 2); ctx.stroke(); ctx.globalAlpha = 1; }
+    if (!st.ghost && st.s.maxHealth) {
+      const f = Math.max(0, Math.min(1, st.hp / st.s.maxHealth));
+      ctx.fillStyle = 'rgba(0,0,0,.6)'; ctx.fillRect(X - 12, Y - r - 10, 24, 4);
+      ctx.fillStyle = f > .5 ? COLORS.ally : f > .25 ? COLORS.self : COLORS.enemy; ctx.fillRect(X - 12, Y - r - 10, 24 * f, 4);
+    }
+  }
+  if (opts.fires && !st.dead && !st.ghost) {
+    const n = fireCount(st.s.id);
+    for (let i = 0; i < n; i++) flame(ctx, X + 15 + i * 7, Y - r - 8);
+  }
+  const depth = depthAt(st.s.id);
+  if (opts.names) {
+    ctx.font = '11px system-ui'; ctx.textAlign = 'center'; ctx.textBaseline = 'top';
+    ctx.fillStyle = st.dead || st.ghost ? 'rgba(219,228,243,.45)' : 'rgba(219,228,243,.9)';
+    ctx.fillText(`${st.s.name} · ${shortShip(st.s.ship)}${depth < -1 && !st.dead ? ` · ${Math.round(depth)} m` : ''}`, X, Y + r + 5);
+  }
+  if (opts.consumables && !st.dead && !st.ghost) {   // active consumables under the name
+    const act = activeConsumables(st.s.id);
+    if (act.length) {
+      ctx.font = 'bold 10px system-ui'; ctx.textAlign = 'center'; ctx.textBaseline = 'top';
+      act.forEach((c, i) => {
+        ctx.fillStyle = consColor(c.label);
+        ctx.fillText(`${c.label} ${Math.ceil(c.left)}s`, X, Y + r + (opts.names ? 18 : 5) + i * 11);
+      });
+    }
+  }
+}
+
+// ------------------------------------------------------------------ battle events
+// consumables [t, vid, label, duration, range], smokes {radius, frames: [[t, [x, z, ...]]], end},
+// damage [t, victim, attacker, amount], fires {vid: [[t, burningFlags]]}, hits [t, shooter, hitType, x, z]
+const HIT_LIFE = 2.5;
+const CONS_COLORS = { Radar: '#c084fc', Hydro: '#22d3ee', 'Sub surveillance': '#38bdf8', Hydrophone: '#67e8f9',
+                      Smoke: '#cbd5e1', 'Repair party': '#86efac', 'Damage control': '#fde68a' };
+const consColor = label => CONS_COLORS[label] || '#a5b4cf';
+const popcount = n => { let c = 0; for (; n; n &= n - 1) c++; return c; };
+function prepEvents() {
+  for (const k of ['consumables', 'damage', 'hits', 'explosions', 'smokes', 'planes']) D[k] = D[k] || [];
+  D.fires = D.fires || {};
+  D.hits.sort((a, b) => a[0] - b[0]); D.explosions.sort((a, b) => a[0] - b[0]);
+  D._cons = {};
+  for (const c of D.consumables) (D._cons[c[1]] || (D._cons[c[1]] = [])).push(c);
+  // running damage totals per ship: [[t, total], ...] dealt (as attacker) and taken (as victim)
+  D._dealt = {}; D._taken = {};
+  const add = (m, id, tt, v) => { const a = m[id] || (m[id] = []); a.push([tt, (a.length ? a[a.length - 1][1] : 0) + v]); };
+  for (const [tt, victim, attacker, dmg] of [...D.damage].sort((a, b) => a[0] - b[0])) {
+    add(D._dealt, attacker, tt, dmg); add(D._taken, victim, tt, dmg);
+  }
+}
+function activeConsumables(id) {
+  return (D._cons[id] || []).filter(c => c[0] <= t && t < c[0] + c[3] && c[2] !== 'Hydrophone')
+    .map(c => ({ label: c[2], range: c[4], left: c[0] + c[3] - t, start: c[0] }));
+}
+const fireCount = id => popcount((valAt(D.fires[id], t, [0, 0])[1]) || 0);
+function flame(ctx, x, y) {
+  ctx.fillStyle = '#fb923c'; ctx.beginPath();
+  ctx.moveTo(x, y - 6); ctx.quadraticCurveTo(x + 4, y - 1, x, y + 2); ctx.quadraticCurveTo(x - 4, y - 1, x, y - 6); ctx.fill();
+  ctx.fillStyle = '#fde047'; ctx.beginPath(); ctx.arc(x, y - .5, 1.3, 0, Math.PI * 2); ctx.fill();
+}
+function smokePuffs(sm) {   // puff centres [x, z, ...] at t, or null
+  if (t < sm.frames[0][0] || (sm.end != null && t >= sm.end)) return null;
+  return valAt(sm.frames, t, null)[1];
+}
+function drawSmoke(ctx) {
+  for (const sm of D.smokes) {
+    const pts = smokePuffs(sm);
+    if (!pts) continue;
+    const R = sm.radius * view.scale;
+    ctx.fillStyle = 'rgba(203, 213, 225, .28)'; ctx.strokeStyle = 'rgba(226, 232, 240, .55)'; ctx.lineWidth = 1;
+    for (let i = 0; i < pts.length; i += 2) {
+      ctx.beginPath(); ctx.arc(sx(pts[i]), sy(pts[i + 1]), R, 0, Math.PI * 2); ctx.fill(); ctx.stroke();
+    }
+  }
+}
+function drawConsumableRings(ctx, st) {
+  if (st.dead || st.ghost) return;
+  for (const c of activeConsumables(st.s.id)) {
+    if (!c.range) continue;
+    ctx.strokeStyle = consColor(c.label); ctx.globalAlpha = .8; ctx.lineWidth = 1.5; ctx.setLineDash([6, 4]);
+    ctx.beginPath(); ctx.arc(sx(st.x), sy(st.z), c.range * view.scale, 0, Math.PI * 2); ctx.stroke();
+    ctx.globalAlpha = .06; ctx.fillStyle = consColor(c.label); ctx.fill();
+  }
+  ctx.setLineDash([]); ctx.globalAlpha = 1;
+}
+// shell endings: 0x60 family = on a ship, 0x40 = terrain, 0x20 = water; explosions = torpedo/bomb hits
+function hitStyle(ht) {
+  if ((ht & 0x60) === 0x60) return ['#fb923c', 3];
+  if (ht & 0x40) return ['#a16207', 2];
+  if (ht & 0x20) return ['rgba(186, 230, 253, .8)', 1.6];
+  return null;
+}
+function drawHits(ctx) {
+  const h = D.hits;
+  for (let i = Math.max(0, idxAt(h, t - HIT_LIFE)); i < h.length && h[i][0] <= t; i++) {
+    const [t0, , ht, x, z] = h[i], f = (t - t0) / HIT_LIFE, style = hitStyle(ht);
+    if (f < 0 || f > 1 || !style) continue;
+    ctx.globalAlpha = 1 - f; ctx.fillStyle = style[0];
+    ctx.beginPath(); ctx.arc(sx(x), sy(z), style[1], 0, Math.PI * 2); ctx.fill();
+    if (style[1] === 3) { ctx.strokeStyle = style[0]; ctx.lineWidth = 1; ctx.beginPath(); ctx.arc(sx(x), sy(z), 3 + f * 8, 0, Math.PI * 2); ctx.stroke(); }
+  }
+  const e = D.explosions;
+  for (let i = Math.max(0, idxAt(e, t - HIT_LIFE)); i < e.length && e[i][0] <= t; i++) {
+    const [t0, x, z] = e[i], f = (t - t0) / HIT_LIFE;
+    if (f < 0 || f > 1) continue;
+    ctx.globalAlpha = 1 - f; ctx.strokeStyle = '#fde047'; ctx.lineWidth = 2;
+    ctx.beginPath(); ctx.arc(sx(x), sy(z), 4 + f * 14, 0, Math.PI * 2); ctx.stroke();
+  }
+  ctx.globalAlpha = 1;
+}
+// squadrons: track [[t, x, z, y | null]] between start and end; owner = planeID & 0xffffffff
+function planeState(sq) {
+  const tEnd = sq.end != null ? sq.end : sq.track[sq.track.length - 1][0] + 3;
+  if (t < sq.start || t > tEnd) return null;
+  const tr = sq.track, i = idxAt(tr, t);
+  if (i < 0) return null;
+  const a = tr[i], b = tr[Math.min(i + 1, tr.length - 1)], f = b[0] > a[0] ? Math.min(1, (t - a[0]) / (b[0] - a[0])) : 0;
+  const x = a[1] + (b[1] - a[1]) * f, z = a[2] + (b[2] - a[2]) * f;
+  let y = null;
+  for (let k = i; k >= 0 && k > i - 40; k--) if (tr[k][3] != null) { y = tr[k][3]; break; }
+  const lost = sq.losses.filter(l => l[0] <= t).reduce((n, l) => n + l[1], 0);
+  return { x, z, y: y == null ? 25 : y, hdg: Math.atan2(b[1] - a[1], b[2] - a[2]), n: sq.n != null ? Math.max(0, sq.n - lost) : null,
+           owner: byId[sq.owner] };
+}
+function drawPlanes(ctx) {
+  for (const sq of D.planes) {
+    const p = planeState(sq);
+    if (!p) continue;
+    const col = colorOf(p.owner), X = sx(p.x), Y = sy(p.z);
+    ctx.save(); ctx.translate(X, Y); ctx.rotate(p.hdg);
+    ctx.fillStyle = col; ctx.globalAlpha = .9; ctx.beginPath();
+    ctx.moveTo(0, -6); ctx.lineTo(1.5, -1); ctx.lineTo(7, 1); ctx.lineTo(1.5, 1.5); ctx.lineTo(1, 5); ctx.lineTo(3, 6.5);
+    ctx.lineTo(-3, 6.5); ctx.lineTo(-1, 5); ctx.lineTo(-1.5, 1.5); ctx.lineTo(-7, 1); ctx.lineTo(-1.5, -1); ctx.closePath(); ctx.fill();
+    ctx.restore(); ctx.globalAlpha = 1;
+    if (opts.names && p.n != null) { ctx.font = '10px system-ui'; ctx.fillStyle = col; ctx.textAlign = 'left'; ctx.textBaseline = 'middle'; ctx.fillText(p.n, X + 8, Y); }
+  }
+}
+// submarine depth in metres (buoyancyCurrentWaterline, < 0 = submerged)
+const depthAt = id => D.depth && D.depth[id] ? valAt(D.depth[id], t, [0, 0])[1] : 0;
+const kfmt = v => v >= 1000 ? `${(v / 1000).toFixed(v >= 100000 ? 0 : 1)}k` : `${v}`;
+
+function drawShells(ctx) {
+  const sh = D.shots;
+  for (let i = Math.max(0, idxAt(sh, t - SHOT_LIFE_MAX)); i < sh.length && sh[i][0] <= t; i++) {
+    const [t0, owner, xa, za, xb, zb, flight] = sh[i];
+    const f = (t - t0) / Math.min(flight, SHOT_LIFE_MAX);
+    if (f < 0 || f > 1) continue;
+    const col = colorOf(byId[owner]);
+    ctx.strokeStyle = col; ctx.globalAlpha = .12; ctx.lineWidth = 1;
+    ctx.beginPath(); ctx.moveTo(sx(xa), sy(za)); ctx.lineTo(sx(xb), sy(zb)); ctx.stroke();
+    ctx.globalAlpha = .9; ctx.fillStyle = col;
+    ctx.beginPath(); ctx.arc(sx(xa + (xb - xa) * f), sy(za + (zb - za) * f), 1.8, 0, Math.PI * 2); ctx.fill();
+  }
+  ctx.globalAlpha = 1;
+}
+
+function drawTorpedoes(ctx) {
+  const tp = D.torpedoes;
+  for (let i = Math.max(0, idxAt(tp, t - TORP_LIFE)); i < tp.length && tp[i][0] <= t; i++) {
+    const [t0, owner, x, z, dx, dz] = tp[i], dt = t - t0;
+    if (dt < 0 || dt > TORP_LIFE) continue;
+    const X = sx(x + dx * dt), Y = sy(z + dz * dt), len = Math.hypot(dx, dz) || 1;
+    ctx.strokeStyle = colorOf(byId[owner]); ctx.globalAlpha = .9 * (1 - dt / TORP_LIFE); ctx.lineWidth = 2;
+    ctx.beginPath(); ctx.moveTo(X, Y); ctx.lineTo(X - dx / len * 8, Y + dz / len * 8); ctx.stroke();
+  }
+  ctx.globalAlpha = 1;
+}
+
+function drawCamera(ctx) {
+  const c = valAt(D.camera, t, null);
+  if (!c || t - c[0] > 2) return;
+  if (valAt(D.viewMode, t, [0, 8])[1] === 5) return;   // tactical map: camera is not at the ship
+  const [, cx, , cz, dx, , dz, fov] = c, len = Math.hypot(dx, dz) || 1;
+  const ang = Math.atan2(dx / len, dz / len), reach = 260;
+  const X = sx(cx), Y = sy(cz), R = reach * view.scale;
+  // canvas angle of world heading: screen x = sin, screen y = -cos
+  const a = ang - Math.PI / 2;
+  ctx.fillStyle = 'rgba(255, 209, 102, .10)'; ctx.beginPath(); ctx.moveTo(X, Y);
+  ctx.arc(X, Y, R, a - fov / 2, a + fov / 2); ctx.closePath(); ctx.fill();
+  ctx.strokeStyle = css('--camera'); ctx.lineWidth = 1.5; ctx.beginPath();
+  ctx.moveTo(X, Y); ctx.lineTo(X + Math.sin(ang) * R, Y - Math.cos(ang) * R); ctx.stroke();
+  ctx.fillStyle = css('--camera'); ctx.beginPath(); ctx.arc(X, Y, 2.5, 0, Math.PI * 2); ctx.fill();
+}
+
+function drawLock(ctx, states) {
+  const lock = valAt(D.targetLock, t, null);
+  if (!lock || !lock[1]) return;
+  const me = states.find(st => st && st.s.relation === 'self'), tgt = states.find(st => st && st.s.id === lock[1]);
+  if (!me || !tgt || me.dead || tgt.dead) return;
+  ctx.strokeStyle = COLORS.enemy; ctx.globalAlpha = .5; ctx.setLineDash([2, 5]); ctx.lineWidth = 1;
+  ctx.beginPath(); ctx.moveTo(sx(me.x), sy(me.z)); ctx.lineTo(sx(tgt.x), sy(tgt.z)); ctx.stroke();
+  ctx.setLineDash([]); ctx.globalAlpha = 1;
+}
+
+// controls kind 0 = engine telegraph (sticky in game). Kind 1 (Q/E rudder lock) is not shown:
+// held A/D steering does not appear in the replay, so the lock state goes stale.
+const THROTTLE = { '-1': 'reverse', 0: 'stop', 1: '1/4', 2: '1/2', 3: '3/4', 4: 'full' };
+function drawHud() {
+  const cam = valAt(D.camera, t, null);
+  const thr = [...D.controls].reverse().find(c => c[0] <= t && c[1] === 0);
+  const mode = valAt(D.viewMode, t, [0, 8])[1];
+  const lock = valAt(D.targetLock, t, null);
+  const parts = [
+    `Throttle <b>${thr ? THROTTLE[thr[2]] ?? thr[2] : '-'}</b>`,
+    `View <b>${mode === 5 ? 'tactical map' : cam && cam[7] < 0.5 ? 'binoculars' : 'normal'}</b>`,
+  ];
+  if (lock && lock[1] && byId[lock[1]]) parts.push(`Target <b>${esc(byId[lock[1]].name)}</b>`);
+  document.getElementById('hud').innerHTML = parts.join(' &nbsp;·&nbsp; ');
+}
+
+// ------------------------------------------------------------------ timeline (score graph + events)
+function drawTimeline() {
+  const ctx = tctx, r = tl.getBoundingClientRect(), W = r.width, H = r.height, end = D.meta.end;
+  const X = tt => tt / end * W;
+  ctx.clearRect(0, 0, W, H);
+  ctx.fillStyle = css('--panel-2'); ctx.fillRect(0, 0, W, H);
+  const win = D.meta.winScore || Math.max(1, ...D.score.map(s => Math.max(s[1], s[2])));
+  const own = D.meta.ownTeam, Y = v => H - 4 - v / win * (H - 16);
+  for (const [team, col] of [[own, COLORS.ally], [1 - own, COLORS.enemy]]) {
+    ctx.strokeStyle = col; ctx.globalAlpha = .7; ctx.lineWidth = 1.5; ctx.beginPath();
+    D.score.forEach((s, i) => { const v = s[1 + team]; i ? ctx.lineTo(X(s[0]), Y(v)) : ctx.moveTo(X(s[0]), Y(v)); });
+    ctx.stroke();
+  }
+  ctx.globalAlpha = 1;
+  for (const d of D.deaths) {
+    const victim = byId[d[1]];
+    ctx.fillStyle = colorOf(victim);
+    ctx.fillRect(X(d[0]) - 1, 0, 2, 10);
+    if (byId[d[2]] && byId[d[2]].relation === 'self') { ctx.beginPath(); ctx.arc(X(d[0]), 14, 2.5, 0, Math.PI * 2); ctx.fill(); }
+  }
+  ctx.fillStyle = '#fff'; ctx.fillRect(X(t) - 1, 0, 2, H);
+}
+
+function seekFromEvent(e) {
+  const r = tl.getBoundingClientRect();
+  t = Math.max(0, Math.min(D.meta.end, (e.clientX - r.left) / r.width * D.meta.end));
+  draw();
+}
+let dragging = false;
+tl.addEventListener('pointerdown', e => { if (!D) return; dragging = true; tl.setPointerCapture(e.pointerId); seekFromEvent(e); });
+tl.addEventListener('pointermove', e => { if (dragging) seekFromEvent(e); });
+tl.addEventListener('pointerup', () => { dragging = false; });
+
+// ------------------------------------------------------------------ sidebar
+function buildSide() {
+  const m = D.meta, res = m.result;
+  const outcome = !res ? '' : res.winnerTeamId === m.ownTeam ? '<span class="ally">Victory</span>' :
+    res.winnerTeamId < 0 ? 'Draw' : '<span class="enemy">Defeat</span>';
+  const toggles = Object.keys(opts).map(k =>
+    `<label><input type="checkbox" data-opt="${k}" ${opts[k] ? 'checked' : ''}>${k}</label>`).join('');
+  document.getElementById('side').innerHTML = `
+    <h1>${esc(m.map)} ${outcome}</h1>
+    <div class="sub">${esc(m.gameType)} · ${esc(m.scenario)} · ${esc(m.dateTime)} · v${esc(m.version)}</div>
+    <div class="score"><b class="ally" id="sc-a">0</b><div class="scorebar"><i id="sb-a" style="left:0;background:var(--ally)"></i><i id="sb-e" style="right:0;background:var(--enemy)"></i></div><b class="enemy" id="sc-e">0</b></div>
+    <h2>Allies</h2><div id="list-ally"></div>
+    <h2>Enemies</h2><div id="list-enemy"></div>
+    <h2>Kills</h2><div class="feed" id="feed"></div>
+    <h2>Consumables</h2><div class="feed" id="cons"></div>
+    <h2>Chat</h2><div class="feed" id="chat"></div>
+    <h2>Layers</h2><div class="toggles">${toggles}</div>`;
+  for (const side of ['ally', 'enemy']) {
+    document.getElementById('list-' + side).innerHTML = ships
+      .filter(s => side === 'ally' ? s.relation !== 'enemy' : s.relation === 'enemy')
+      .map(s => `<div class="ship ${s.relation === 'self' ? 'me' : ''}" id="row-${s.id}">
+        <div class="nm"><span class="${s.relation}">${esc(s.clan ? `[${s.clan}] ` : '')}${esc(s.name)}</span></div>
+        <div class="cls">${esc(shortShip(s.ship))} ${s.species ? esc(s.species[0]) : ''}${s.level || ''}</div>
+        <div class="hp"><i style="width:100%;background:${colorOf(s)}"></i></div>
+        <div class="dm" title="damage dealt / taken, as far as this replay saw it"></div></div>`).join('');
+  }
+  document.querySelectorAll('[data-opt]').forEach(el => el.addEventListener('change', () => { opts[el.dataset.opt] = el.checked; draw(); }));
+}
+
+function updateSide() {
+  const sc = valAt(D.score, t, [0, 0, 0]), own = D.meta.ownTeam, win = D.meta.winScore || 1000;
+  const a = sc[1 + own], e = sc[2 - own];
+  document.getElementById('sc-a').textContent = a;
+  document.getElementById('sc-e').textContent = e;
+  document.getElementById('sb-a').style.width = `${Math.min(50, a / win * 50)}%`;
+  document.getElementById('sb-e').style.width = `${Math.min(50, e / win * 50)}%`;
+  for (const s of ships) {
+    const row = document.getElementById('row-' + s.id);
+    if (!row) continue;
+    const hp = valAt(D.health[s.id], t, null), dead = deathOf[s.id] && t >= deathOf[s.id][0];
+    row.classList.toggle('dead', !!dead);
+    row.querySelector('.hp i').style.width = `${dead ? 0 : hp && s.maxHealth ? Math.max(0, hp[1] / s.maxHealth * 100) : 100}%`;
+    const dealt = valAt(D._dealt[s.id], t, [0, 0])[1], taken = valAt(D._taken[s.id], t, [0, 0])[1];
+    const fires = fireCount(s.id), act = activeConsumables(s.id).map(c => c.label);
+    row.querySelector('.dm').innerHTML = (dealt || taken ? `dmg ${kfmt(dealt)} <span>· taken ${kfmt(taken)}</span>` : '') +
+      (!dead && fires ? ` <b class="fire">fire ×${fires}</b>` : '') +
+      (!dead && act.length ? ` <b class="act">${esc(act.join(', '))}</b>` : '');
+  }
+  const name = id => byId[id] ? `<span class="${byId[id].relation}">${esc(byId[id].name)}</span>` : `#${id}`;
+  document.getElementById('feed').innerHTML = D.deaths.filter(d => d[0] <= t).reverse().map(d =>
+    `<div>${name(d[2])} sank ${name(d[1])} <span class="why">${esc(d[3].toLowerCase().replace(/_/g, ' '))} · ${fmt(d[0])}</span></div>`).join('') || '<div class="sub">none yet</div>';
+  document.getElementById('cons').innerHTML = D.consumables.filter(c => c[0] <= t && c[2] !== 'Hydrophone').slice(-8).reverse().map(c =>
+    `<div>${name(c[1])} <b style="color:${consColor(c[2])}">${esc(c[2])}</b> <span class="why">${fmt(c[0])}</span></div>`).join('') || '<div class="sub">none yet</div>';
+  document.getElementById('chat').innerHTML =D.chat.filter(c => c[0] <= t).slice(-8).reverse().map(c =>
+    `<div>${esc(c[3])} <span class="why">${esc(c[2])} · ${fmt(c[0])}</span></div>`).join('') || '<div class="sub">none yet</div>';
+  const clk = valAt(D.clock, t, null);
+  const left = clk ? Math.max(0, clk[1] - (t - clk[0])) : null;
+  document.getElementById('clock').innerHTML = `<b>${left != null ? fmt(left) : '-'}</b> left<br>${fmt(t)} / ${fmt(D.meta.end)}`;
+}
+
+// ------------------------------------------------------------------ 3D view (three.js, mock geometry)
+// World x/z maps to three.js x/-z (BigWorld is left-handed), so yaw becomes rotation.y = -yaw.
+// No terrain in replays: the sea is flat and islands are missing. Ship models are class-based boxes.
+const has3D = typeof THREE !== 'undefined';
+const SHIP_LEN = { Destroyer: 4, Cruiser: 6.5, Battleship: 8.5, AirCarrier: 8.5, Submarine: 3.5 };  // world units (~30 m)
+const TURRETS = { Destroyer: [.3, -.32], Cruiser: [.32, .2, -.3], Battleship: [.33, .21, -.22, -.34] };
+const SHELL_ARC = .12;   // apex height as a fraction of range: a guess, not from the replay
+const V3 = { active: false, built: false, mode: 'orbit', scale: 1, w: 0, h: 0 };
+const orbit = { yaw: 0, pitch: .85, dist: 900, target: null, drag: null };
+
+function v3Build() {
+  const canvas = document.getElementById('gl');
+  const [x0, z0, x1, z1] = D.meta.bounds, size = x1 - x0;
+  V3.size = size;
+  V3.center = new THREE.Vector3((x0 + x1) / 2, 0, -(z0 + z1) / 2);
+  orbit.target = V3.center.clone(); orbit.dist = size * .85;
+  // log depth: caps lie just above the water and are seen from 0.3 to ~10000 u away
+  V3.renderer = new THREE.WebGLRenderer({ canvas, antialias: true, logarithmicDepthBuffer: true });
+  V3.renderer.setPixelRatio(window.devicePixelRatio || 1);
+  const scene = V3.scene = new THREE.Scene();
+  scene.background = new THREE.Color(0x0b1626);
+  scene.fog = new THREE.Fog(0x0b1626, size * .9, size * 3);
+  V3.camera = new THREE.PerspectiveCamera(50, 1, .3, size * 8);
+  scene.add(new THREE.HemisphereLight(0xcfe0ff, 0x0b1a2a, 1.0));
+  const sun = new THREE.DirectionalLight(0xffffff, 1.4);
+  sun.position.set(400, 700, 250); scene.add(sun);
+
+  const water = new THREE.Mesh(new THREE.PlaneGeometry(size * 6, size * 6),
+    new THREE.MeshStandardMaterial({ color: 0x14406a, roughness: .55, metalness: .15 }));
+  water.rotation.x = -Math.PI / 2; water.position.copy(V3.center); scene.add(water);
+  if (D.map && D.map.terrain) scene.add(v3Terrain(D.map.terrain));
+  const cells = 2 * Math.ceil(size / 200);   // 100 u grid, aligned to multiples of 100
+  const grid = new THREE.GridHelper(cells * 100, cells, 0x5a7fa8, 0x2c4a6c);
+  grid.material.transparent = true; grid.material.opacity = .25;
+  grid.position.set(Math.round(V3.center.x / 100) * 100, .05, Math.round(V3.center.z / 100) * 100);
+  scene.add(grid);
+
+  V3.col = Object.fromEntries(Object.entries(COLORS).map(([k, v]) => [k, new THREE.Color(v)]));
+  V3.dead = new THREE.Color(0x56606e); V3.dark = new THREE.Color(0x1a1a1a);
+  V3.labels = document.getElementById('labels');
+  V3.fireGeo = new THREE.SphereGeometry(1, 10, 8);
+  V3.fireMat = new THREE.MeshBasicMaterial({ color: 0xfb923c });
+  V3.ships = Object.fromEntries(ships.map(s => [s.id, v3Ship(s)]));
+  V3.zones = D.zones.map(v3Zone);
+  V3.shellPts = v3Dyn(THREE.Points, 3000, new THREE.PointsMaterial({ size: 3, vertexColors: true, sizeAttenuation: false }));
+  V3.shellTails = v3Dyn(THREE.LineSegments, 6000, new THREE.LineBasicMaterial({ vertexColors: true, transparent: true, opacity: .55 }));
+  V3.torpPts = v3Dyn(THREE.Points, 400, new THREE.PointsMaterial({ size: 4, vertexColors: true, sizeAttenuation: false }));
+  V3.torpWakes = v3Dyn(THREE.LineSegments, 800, new THREE.LineBasicMaterial({ vertexColors: true, transparent: true, opacity: .6 }));
+  V3.camLine = v3Dyn(THREE.LineSegments, 16, new THREE.LineBasicMaterial({ vertexColors: true }));
+  // battle events: shell endings / explosions as points, smoke puffs as translucent cylinders
+  V3.planePts = v3Dyn(THREE.Points, 400, new THREE.PointsMaterial({ size: 7, vertexColors: true, sizeAttenuation: false }));
+  V3.hitPts = v3Dyn(THREE.Points, 2000, new THREE.PointsMaterial({ size: 5, vertexColors: true, sizeAttenuation: false }));
+  V3.smokeGeo = new THREE.CylinderGeometry(1, 1, 1, 24);
+  V3.smokeMat = new THREE.MeshStandardMaterial({ color: 0xd5dbe3, transparent: true, opacity: .42, depthWrite: false, roughness: 1 });
+  V3.smokePool = [];
+  V3.ringGeo = new THREE.RingGeometry(.993, 1, 160);
+  v3Controls(canvas);
+  V3.built = true;
+}
+
+// game heightmap (tools/import_spaces.py): int16 * scale, row = +z, col = +x.
+// Only cells that reach near the surface are meshed; the water plane hides the rest.
+const TERRAIN_STOPS = [[-3, 0x6b6650], [.6, 0xb9a77a], [4, 0x6f8a45], [18, 0x4f6a36], [38, 0x7d776c], [70, 0xdcdcdc]];
+function v3Terrain(T) {
+  const H = new Int16Array(Uint8Array.from(atob(T.data), ch => ch.charCodeAt(0)).buffer);
+  const n = T.n, pos = new Float32Array(n * n * 3), col = new Float32Array(n * n * 3);
+  const c = new THREE.Color(), lo = new THREE.Color(), hi = new THREE.Color();
+  for (let r = 0; r < n; r++) for (let q = 0; q < n; q++) {
+    const i = r * n + q, y = H[i] * T.scale;
+    pos[i * 3] = T.x0 + q * T.step; pos[i * 3 + 1] = y; pos[i * 3 + 2] = -(T.z0 + r * T.step);
+    let k = 1;
+    while (k < TERRAIN_STOPS.length - 1 && y > TERRAIN_STOPS[k][0]) k++;
+    const [y0, c0] = TERRAIN_STOPS[k - 1], [y1, c1] = TERRAIN_STOPS[k];
+    c.lerpColors(lo.setHex(c0), hi.setHex(c1), Math.min(1, Math.max(0, (y - y0) / (y1 - y0))));
+    col[i * 3] = c.r; col[i * 3 + 1] = c.g; col[i * 3 + 2] = c.b;
+  }
+  const idx = [], wet = -1 / T.scale;
+  for (let r = 0; r < n - 1; r++) for (let q = 0; q < n - 1; q++) {
+    const a = r * n + q, b = a + 1, d = a + n, e = d + 1;
+    if (Math.max(H[a], H[b], H[d], H[e]) < wet) continue;
+    idx.push(a, b, d, b, e, d);   // counter-clockwise seen from above (three z = -world z)
+  }
+  const g = new THREE.BufferGeometry();
+  g.setAttribute('position', new THREE.BufferAttribute(pos, 3));
+  g.setAttribute('color', new THREE.BufferAttribute(col, 3));
+  g.setIndex(idx);
+  g.computeVertexNormals();
+  return new THREE.Mesh(g, new THREE.MeshStandardMaterial({ vertexColors: true, roughness: .95 }));
+}
+
+// geometry whose vertices are rewritten every frame
+function v3Dyn(Kind, cap, material) {
+  const g = new THREE.BufferGeometry();
+  for (const name of ['position', 'color']) {
+    g.setAttribute(name, new THREE.BufferAttribute(new Float32Array(cap * 3), 3).setUsage(THREE.DynamicDrawUsage));
+  }
+  const obj = new Kind(g, material);
+  obj.frustumCulled = false; obj.cap = cap; obj.n = 0;
+  V3.scene.add(obj);
+  return obj;
+}
+function v3Begin(obj) { obj.n = 0; }
+function v3Add(obj, x, y, z, col) {
+  if (obj.n >= obj.cap) return;
+  const p = obj.geometry.attributes.position.array, c = obj.geometry.attributes.color.array, i = obj.n * 3;
+  p[i] = x; p[i + 1] = y; p[i + 2] = z; c[i] = col.r; c[i + 1] = col.g; c[i + 2] = col.b;
+  obj.n++;
+}
+function v3End(obj) {
+  obj.geometry.setDrawRange(0, obj.n);
+  obj.geometry.attributes.position.needsUpdate = obj.geometry.attributes.color.needsUpdate = true;
+}
+
+// game ship models (tools/import_models.py): one BufferGeometry per visual, shared by all ships of a type
+const MODEL_GEO = {};
+function v3ModelGeo(key, path) {
+  const id = key + '|' + path;
+  if (!MODEL_GEO[id]) {
+    const m = D.models[key].meshes[path];
+    const raw = s => Uint8Array.from(atob(s), c => c.charCodeAt(0)).buffer;
+    const q = new Int16Array(raw(m.pos)), pos = new Float32Array(q.length);   // int16 on the bbox
+    for (let i = 0; i < q.length; i++) pos[i] = m.q[i % 3] + (q[i] + 32768) * m.q[3 + i % 3];
+    const attr = new THREE.BufferAttribute(pos, 3);
+    const make = b64 => {
+      const g = new THREE.BufferGeometry();
+      g.setAttribute('position', attr);
+      g.setIndex(new THREE.BufferAttribute(m.idx32 ? new Uint32Array(raw(b64)) : new Uint16Array(raw(b64)), 1));
+      g.computeVertexNormals();
+      return g;
+    };
+    // barrels (gun mounts only) share the vertices and elevate about pivot
+    MODEL_GEO[id] = { body: make(m.idx), barrels: m.barrels ? make(m.barrels) : null, pivot: m.pivot };
+  }
+  return MODEL_GEO[id];
+}
+
+// per ship: shells by gun ([t, x1, z1, pitch], gun = gunBarrelID & 0x801F) and a range -> pitch table
+// from its main-battery shells, so barrels can follow the aim range between salvos
+function gunData(id) {
+  if (!D._guns) {
+    D._guns = {};
+    for (const sh of D.shots) {
+      if (sh.length < 9) continue;
+      const o = D._guns[sh[1]] || (D._guns[sh[1]] = { byGun: {}, pairs: [] });
+      (o.byGun[sh[7]] || (o.byGun[sh[7]] = [])).push([sh[0], sh[4], sh[5], sh[8]]);
+      if (!(sh[7] & 0x8000)) o.pairs.push([Math.hypot(sh[4] - sh[2], sh[5] - sh[3]), sh[8]]);
+    }
+    for (const o of Object.values(D._guns)) {   // 25-unit bins, median pitch, increasing range
+      const bins = {};
+      for (const [r, p] of o.pairs) (bins[Math.round(r / 25)] || (bins[Math.round(r / 25)] = [])).push(p);
+      o.table = Object.entries(bins).map(([k, ps]) => [k * 25, ps.sort((a, b) => a - b)[ps.length >> 1]])
+        .sort((a, b) => a[0] - b[0]);
+      delete o.pairs;
+    }
+  }
+  return D._guns[id];
+}
+function pitchForRange(table, r) {
+  if (!table || !table.length) return 0;
+  if (r <= table[0][0]) return table[0][1] * r / Math.max(1, table[0][0]);
+  for (let i = 1; i < table.length; i++) {
+    if (r <= table[i][0]) {
+      const [r0, p0] = table[i - 1], [r1, p1] = table[i];
+      return p0 + (p1 - p0) * (r - r0) / (r1 - r0);
+    }
+  }
+  return table[table.length - 1][1];
+}
+
+function v3Ship(s) {
+  // in-game ships are drawn at ~15 m per world unit (Preussen's 313 m model is 21 u long)
+  let L = s.length ? s.length / 15 : (SHIP_LEN[s.species] || 6) * 2, B = L * .13, H = L * .07;
+  const base = new THREE.Color(colorOf(s));
+  const hullMat = new THREE.MeshStandardMaterial({ color: base.clone(), roughness: .45, metalness: .2, transparent: true });
+  const topMat = new THREE.MeshStandardMaterial({ color: base.clone().lerp(new THREE.Color(0x1a1a1a), .45), roughness: .7, transparent: true });
+  const g = new THREE.Group();
+  g.rotation.order = 'YXZ';   // yaw first, then list (roll) around the ship's own axis
+  const add = (geo, mat, x, y, z) => { const m = new THREE.Mesh(geo, mat); m.position.set(x, y, z); g.add(m); return m; };
+  const model = D.models && D.models[s.ship];
+  let turrets = null;
+  if (model) {
+    const box = new THREE.Box3(), byHp = {}, built = [];
+    turrets = [];
+    for (const p of model.parts) {
+      if (!model.meshes[p.mesh]) continue;
+      const geo = v3ModelGeo(s.ship, p.mesh);
+      const m = new THREE.Mesh(geo.body, p.kind === 'hull' ? hullMat : topMat);
+      m.matrixAutoUpdate = false; m.matrix.fromArray(p.m);
+      g.add(m);
+      let mb = null;
+      if (geo.barrels) {
+        mb = new THREE.Mesh(geo.barrels, topMat);
+        mb.matrixAutoUpdate = false; mb.matrix.fromArray(p.m);
+        g.add(mb);
+      }
+      built.push([p, m, mb]);
+      if (p.kind === 'hull') { m.geometry.computeBoundingBox(); box.union(m.geometry.boundingBox.clone().applyMatrix4(m.matrix)); }
+      if (p.kind === 'main' || p.kind === 'secondary' || p.kind === 'torpedo') {
+        // mount position and forward (local -z) in ship space; turning = M * rotY(phi),
+        // barrels additionally M * rotY(phi) * T(pivot) * rotX(theta) * T(-pivot)
+        const M = m.matrix.clone(), e = M.elements, pv = geo.pivot || [0, 0, 0];
+        const tu = { m, mb, M, Minv: M.clone().invert(), kind: p.kind, gun: p.gun, px: e[12], pz: e[14], fx: -e[8], fz: -e[10],
+                     sector: p.sector ? p.sector.map(a => a * Math.PI / 180) : null, kids: [],
+                     toPivot: new THREE.Matrix4().makeTranslation(pv[0], pv[1], pv[2]),
+                     fromPivot: new THREE.Matrix4().makeTranslation(-pv[0], -pv[1], -pv[2]) };
+        turrets.push(tu); byHp[p.hp] = tu;
+      }
+    }
+    for (const [p, m, mb] of built) {   // parts standing on a turret (AA on the roof) turn with it
+      const tu = p.parent && byHp[p.parent];
+      if (tu) for (const k of [m, mb]) if (k) tu.kids.push({ m: k, M: k.matrix.clone() });
+    }
+    L = box.max.z - box.min.z; H = L * .07;
+  } else if (s.species === 'Submarine') {
+    add(new THREE.CapsuleGeometry(B * .6, L * .8, 4, 10), hullMat, 0, 0, 0).rotation.x = Math.PI / 2;
+    add(new THREE.BoxGeometry(B * .35, H * 1.6, L * .14), topMat, 0, H * .9, -L * .05);
+  } else {
+    // hull outline in the XY plane with the bow at +y, extruded up; rotateX maps +y to -z (forward)
+    const sh = new THREE.Shape();
+    sh.moveTo(0, L / 2); sh.lineTo(B / 2, L * .22); sh.lineTo(B / 2, -L * .4); sh.lineTo(B * .32, -L / 2);
+    sh.lineTo(-B * .32, -L / 2); sh.lineTo(-B / 2, -L * .4); sh.lineTo(-B / 2, L * .22); sh.closePath();
+    const hull = new THREE.ExtrudeGeometry(sh, { depth: H, bevelEnabled: false });
+    hull.rotateX(-Math.PI / 2);
+    add(hull, hullMat, 0, -H * .35, 0);
+    if (s.species === 'AirCarrier') {
+      add(new THREE.BoxGeometry(B * 1.15, H * .25, L * .95), topMat, 0, H * .75, 0);
+      add(new THREE.BoxGeometry(B * .2, H * 1.6, L * .16), topMat, B * .45, H * 1.5, 0);
+    } else {
+      const tall = s.species === 'Battleship' ? 2.4 : s.species === 'Destroyer' ? 1.4 : 1.9;
+      add(new THREE.BoxGeometry(B * .55, H * tall, L * .16), topMat, 0, H * .65 + H * tall / 2, L * .02);
+      add(new THREE.CylinderGeometry(B * .13, B * .15, H * 1.4, 8), topMat, 0, H * 1.3, L * .12);
+      for (const f of TURRETS[s.species] || TURRETS.Cruiser) {   // f > 0: forward of midships
+        add(new THREE.CylinderGeometry(B * .24, B * .27, H * .45, 10), topMat, 0, H * .88, -f * L);
+        add(new THREE.BoxGeometry(B * .08, B * .08, L * .12), topMat, 0, H * .95, -f * L - Math.sign(f) * L * .08);
+      }
+    }
+  }
+  const fire = new THREE.Mesh(V3.fireGeo, V3.fireMat);   // shown while any section burns
+  fire.position.set(0, H * 3, 0); fire.visible = false; g.add(fire);
+  V3.scene.add(g);
+  const trail = new THREE.Line(new THREE.BufferGeometry(), new THREE.LineBasicMaterial({ color: base, transparent: true, opacity: .45 }));
+  trail.geometry.setAttribute('position', new THREE.BufferAttribute(new Float32Array(600 * 3), 3).setUsage(THREE.DynamicDrawUsage));
+  trail.frustumCulled = false;
+  V3.scene.add(trail);
+  const el = document.createElement('div');
+  el.className = 'lbl';
+  el.innerHTML = `<span style="color:${colorOf(s)}">${esc(s.name)}</span><i><b></b></i>`;
+  V3.labels.appendChild(el);
+  return { s, g, hullMat, topMat, base, trail, el, bar: el.querySelector('b'), H, turrets, fire, rings: {} };
+}
+
+// Gun mounts.
+//  main / torpedo: yaw toward Vehicle.targetLocalPos / torpedoLocalPos (u16: low byte = world bearing,
+//    high byte = range); main barrels at the pitch of this gun's last shell if it fired in the last
+//    SALVO_HOLD s, else at the pitch this ship's shells had at the current aim range.
+//  secondary: toward the landing point of this gun's last shell for SEC_HOLD s, else resting.
+const SALVO_HOLD = 3, SEC_HOLD = 6;
+const _rotY = new THREE.Matrix4(), _rotX = new THREE.Matrix4();
+function v3AimTurrets(o, st, scale) {
+  const guns = gunData(o.s.id);
+  const local = (X, Z) => {   // world point -> ship space (+x starboard, -z bow), in model units
+    const dx = X - st.x, dz = Z - st.z, d = Math.hypot(dx, dz) / scale, rel = Math.atan2(dx, dz) - st.yaw;
+    return [d * Math.sin(rel), -d * Math.cos(rel)];
+  };
+  const aims = {};
+  for (const [kind, series] of [['main', D.aim], ['torpedo', D.torpAim]]) {
+    const row = series && valAt(series[o.s.id], t, null);
+    if (!row) continue;
+    const v = row[1], bearing = ((v & 255) + .5) / 256 * 2 * Math.PI + Math.PI;
+    const range = ((v >> 8) + .5) * (D.meta.aimRangeStep || 5.92), rel = bearing - st.yaw;
+    aims[kind] = { x: range / scale * Math.sin(rel), z: -range / scale * Math.cos(rel), range };
+  }
+  for (const tu of o.turrets) {
+    let target = null, theta = 0;
+    const shots = guns && tu.gun != null && guns.byGun[tu.gun | (tu.kind === 'secondary' ? 0x8000 : 0)];
+    const last = shots ? valAt(shots, t, null) : null;
+    if (tu.kind === 'secondary') {
+      if (last && t - last[0] <= SEC_HOLD) { target = local(last[1], last[2]); theta = last[3]; }
+    } else if (aims[tu.kind]) {
+      const a = aims[tu.kind];
+      target = [a.x, a.z];
+      if (tu.kind === 'main') theta = last && t - last[0] <= SALVO_HOLD ? last[3] : pitchForRange(guns && guns.table, a.range);
+    }
+    let phi = 0;
+    if (target) {
+      const dx = target[0] - tu.px, dz = target[1] - tu.pz;
+      phi = Math.atan2(-dx, -dz) - Math.atan2(-tu.fx, -tu.fz);
+      phi = Math.atan2(Math.sin(phi), Math.cos(phi));
+      if (tu.sector) phi = -Math.max(tu.sector[0], Math.min(tu.sector[1], -phi));   // game angles: clockwise +
+    }
+    _rotY.makeRotationY(phi);
+    tu.m.matrix.copy(tu.M).multiply(_rotY);
+    if (tu.mb) tu.mb.matrix.copy(tu.m.matrix).multiply(tu.toPivot).multiply(_rotX.makeRotationX(theta)).multiply(tu.fromPivot);
+    for (const k of tu.kids) k.m.matrix.copy(tu.M).multiply(_rotY).multiply(tu.Minv).multiply(k.M);
+  }
+}
+
+function v3Zone(z) {
+  const r = z.radius, x = z.x, zz = -z.z, flat = m => { m.rotation.x = -Math.PI / 2; return m; };
+  const discMat = new THREE.MeshBasicMaterial({ transparent: true, opacity: .12, depthWrite: false });
+  const ringMat = new THREE.MeshBasicMaterial({ side: THREE.DoubleSide });
+  const wallMat = new THREE.MeshBasicMaterial({ transparent: true, opacity: .08, side: THREE.DoubleSide, depthWrite: false });
+  const disc = flat(new THREE.Mesh(new THREE.CircleGeometry(r, 64), discMat)); disc.position.set(x, .25, zz);
+  const ring = flat(new THREE.Mesh(new THREE.RingGeometry(r - 1.5, r, 96), ringMat)); ring.position.set(x, .35, zz);
+  const wall = new THREE.Mesh(new THREE.CylinderGeometry(r, r, 8, 64, 1, true), wallMat); wall.position.set(x, 4, zz);
+  const progMat = new THREE.MeshBasicMaterial({ side: THREE.DoubleSide });
+  const prog = flat(new THREE.Mesh(new THREE.BufferGeometry(), progMat)); prog.position.set(x, .45, zz);
+  V3.scene.add(disc, ring, wall, prog);
+  const el = document.createElement('div');
+  el.className = 'lbl zone';
+  el.textContent = z.index != null ? 'ABCDEFGH'[z.index] : '?';
+  V3.labels.appendChild(el);
+  return { z, x, zz, discMat, ringMat, wallMat, prog, progMat, el, lastProgress: -1 };
+}
+
+function v3Label(el, x, y, z) {
+  const v = new THREE.Vector3(x, y, z).project(V3.camera);
+  if (v.z > 1 || Math.abs(v.x) > 1.1 || Math.abs(v.y) > 1.1) { el.style.display = 'none'; return false; }
+  el.style.display = '';
+  el.style.left = `${(v.x + 1) / 2 * V3.w}px`;
+  el.style.top = `${(1 - v.y) / 2 * V3.h}px`;
+  return true;
+}
+
+function v3Update() {
+  const scale = V3.mode === 'player' ? 1 : V3.scale;
+  for (const s of ships) {
+    const o = V3.ships[s.id], st = shipState(s);
+    v3Rings(o, st);
+    if (!st || (st.ghost && !opts.ghosts)) { o.g.visible = o.trail.visible = false; o.el.style.display = 'none'; continue; }
+    o.g.visible = true;
+    o.g.scale.setScalar(scale);
+    let y = 0, list = 0;
+    if (st.dead) {   // sink over 12 s
+      const k = Math.min(1, (t - deathOf[s.id][0]) / 12);
+      y = -k * o.H * 1.4 * scale; list = k * .35;
+    }
+    y += Math.min(0, depthAt(s.id)) / 15 * scale;   // submarines: metres -> model units (~15 m each)
+    o.g.position.set(st.x, y, -st.z);
+    o.g.rotation.set(0, -st.yaw, list);
+    if (o.turrets && o.turrets.length && !st.dead) v3AimTurrets(o, st, scale);
+    const nFire = opts.fires && !st.dead && !st.ghost ? fireCount(s.id) : 0;
+    o.fire.visible = nFire > 0;
+    if (nFire) o.fire.scale.setScalar(o.H * (.5 + .2 * nFire) * (1 + .15 * Math.sin(performance.now() / 90)));
+    const col = st.dead ? V3.dead : o.base;
+    o.hullMat.color.copy(col); o.topMat.color.copy(col).lerp(V3.dark, .45);
+    o.hullMat.opacity = o.topMat.opacity = st.ghost ? .25 : 1;
+    o.hullMat.depthWrite = o.topMat.depthWrite = !st.ghost;
+
+    // trail: last TRAIL seconds of real positions
+    const tr = D.tracks[s.id];
+    o.trail.visible = opts.trails && !st.ghost && !!tr;
+    if (o.trail.visible) {
+      const end = st.dead ? deathOf[s.id][0] : t, i1 = idxAt(tr, end), i0 = Math.max(0, idxAt(tr, t - TRAIL));
+      const step = Math.max(1, Math.ceil((i1 - i0 + 1) / 600)), p = o.trail.geometry.attributes.position.array;
+      let n = 0;
+      for (let i = i0; i <= i1 && n < 600; i += step, n++) { p[n * 3] = tr[i][1]; p[n * 3 + 1] = .3; p[n * 3 + 2] = -tr[i][2]; }
+      o.trail.geometry.setDrawRange(0, n);
+      o.trail.geometry.attributes.position.needsUpdate = true;
+    }
+
+    if (!opts.names || !v3Label(o.el, st.x, (o.H * 3.2 + .6) * scale + y, -st.z)) { o.el.style.display = 'none'; continue; }
+    o.el.classList.toggle('faded', st.ghost || st.dead);
+    const f = s.maxHealth ? Math.max(0, Math.min(1, st.hp / s.maxHealth)) : 1;
+    o.bar.parentElement.style.visibility = st.ghost || st.dead ? 'hidden' : '';
+    o.bar.style.width = `${f * 100}%`;
+    o.bar.style.background = f > .5 ? COLORS.ally : f > .25 ? COLORS.self : COLORS.enemy;
+  }
+
+  for (const zo of V3.zones) {
+    const owner = valAt(zo.z.team, t, [0, -1])[1], [, progress, invader] = valAt(zo.z.capture, t, [0, 0, -1]);
+    const col = teamColor(owner);
+    zo.discMat.color.set(col); zo.ringMat.color.set(col); zo.wallMat.color.set(col);
+    const pr = invader >= 0 ? progress : 0;
+    if (Math.abs(pr - zo.lastProgress) > .004) {
+      zo.prog.geometry.dispose();
+      zo.prog.geometry = pr > 0 ? new THREE.RingGeometry(zo.z.radius + 1, zo.z.radius + 4, 96, 1, Math.PI / 2, -pr * Math.PI * 2)
+                                : new THREE.BufferGeometry();
+      zo.lastProgress = pr;
+    }
+    zo.progMat.color.set(teamColor(invader));
+    v3Label(zo.el, zo.x, 12, zo.zz);
+  }
+
+  const relCol = id => V3.col[byId[id] ? byId[id].relation : 'neutral'];
+  for (const o of [V3.shellPts, V3.shellTails, V3.torpPts, V3.torpWakes, V3.camLine]) v3Begin(o);
+  if (opts.shells) {
+    const sh = D.shots;
+    for (let i = Math.max(0, idxAt(sh, t - SHOT_LIFE_MAX)); i < sh.length && sh[i][0] <= t; i++) {
+      const [t0, owner, xa, za, xb, zb, flight] = sh[i];
+      const f = (t - t0) / Math.min(flight, SHOT_LIFE_MAX);
+      if (f < 0 || f > 1) continue;
+      const apex = Math.hypot(xb - xa, zb - za) * SHELL_ARC, col = relCol(owner);
+      const at = q => [xa + (xb - xa) * q, 4 * apex * q * (1 - q) + 1, -(za + (zb - za) * q)];
+      const p = at(f), q = at(Math.max(0, f - .05));
+      v3Add(V3.shellPts, ...p, col);
+      v3Add(V3.shellTails, ...q, col); v3Add(V3.shellTails, ...p, col);
+    }
+  }
+  if (opts.torps) {
+    const tp = D.torpedoes;
+    for (let i = Math.max(0, idxAt(tp, t - TORP_LIFE)); i < tp.length && tp[i][0] <= t; i++) {
+      const [t0, owner, x, z, dx, dz] = tp[i], dt = t - t0, back = Math.max(0, dt - 4), col = relCol(owner);
+      v3Add(V3.torpPts, x + dx * dt, .3, -(z + dz * dt), col);
+      v3Add(V3.torpWakes, x + dx * back, .2, -(z + dz * back), col); v3Add(V3.torpWakes, x + dx * dt, .2, -(z + dz * dt), col);
+    }
+  }
+  const c = valAt(D.camera, t, null);
+  if (opts.camera && V3.mode !== 'player' && c && t - c[0] < 2) {   // where the player was looking
+    const [, cx, cy, cz, dx, dy, dz] = c, reach = 120;
+    v3Add(V3.camLine, cx, cy, -cz, V3.col.self);
+    v3Add(V3.camLine, cx + dx * reach, cy + dy * reach, -(cz + dz * reach), V3.col.self);
+  }
+  for (const o of [V3.shellPts, V3.shellTails, V3.torpPts, V3.torpWakes, V3.camLine]) v3End(o);
+  v3Events();
+}
+
+// consumable range rings (radar, hydro, ...) around a ship; flat on the water, world-sized
+function v3Rings(o, st) {
+  const act = opts.consumables && st && !st.dead && !st.ghost ? activeConsumables(o.s.id).filter(c => c.range) : [];
+  const on = new Set(act.map(c => c.label));
+  for (const [label, m] of Object.entries(o.rings)) m.visible = on.has(label);
+  for (const c of act) {
+    let m = o.rings[c.label];
+    if (!m) {
+      m = o.rings[c.label] = new THREE.Mesh(V3.ringGeo, new THREE.MeshBasicMaterial({ color: consColor(c.label), side: THREE.DoubleSide, transparent: true, opacity: .85 }));
+      m.rotation.x = -Math.PI / 2; V3.scene.add(m);
+    }
+    m.position.set(st.x, .55, -st.z); m.scale.setScalar(c.range);
+  }
+}
+
+const HIT_COLORS = has3D ? { ship: new THREE.Color(0xfb923c), terrain: new THREE.Color(0xa16207),
+                             water: new THREE.Color(0xbae6fd), boom: new THREE.Color(0xfde047) } : {};
+function v3Events() {
+  v3Begin(V3.planePts);
+  if (opts.planes) for (const sq of D.planes) {
+    const p = planeState(sq);
+    if (p) v3Add(V3.planePts, p.x, p.y, -p.z, V3.col[p.owner ? p.owner.relation : 'neutral']);
+  }
+  v3End(V3.planePts);
+  v3Begin(V3.hitPts);
+  if (opts.hits) {
+    const h = D.hits;
+    for (let i = Math.max(0, idxAt(h, t - HIT_LIFE)); i < h.length && h[i][0] <= t; i++) {
+      const [t0, , ht, x, z] = h[i];
+      if (t - t0 < 0) continue;
+      const col = (ht & 0x60) === 0x60 ? HIT_COLORS.ship : ht & 0x40 ? HIT_COLORS.terrain : ht & 0x20 ? HIT_COLORS.water : null;
+      if (col) v3Add(V3.hitPts, x, .8, -z, col);
+    }
+    const e = D.explosions;
+    for (let i = Math.max(0, idxAt(e, t - HIT_LIFE)); i < e.length && e[i][0] <= t; i++) v3Add(V3.hitPts, e[i][1], 1.2, -e[i][2], HIT_COLORS.boom);
+  }
+  v3End(V3.hitPts);
+
+  let n = 0;   // smoke puffs: radius from the entity, 5 u high (SmokeScreen.height)
+  if (opts.smoke) {
+    for (const sm of D.smokes) {
+      const pts = smokePuffs(sm);
+      if (!pts) continue;
+      for (let i = 0; i < pts.length; i += 2, n++) {
+        let m = V3.smokePool[n];
+        if (!m) { m = V3.smokePool[n] = new THREE.Mesh(V3.smokeGeo, V3.smokeMat); V3.scene.add(m); }
+        m.visible = true; m.position.set(pts[i], 2.5, -pts[i + 1]); m.scale.set(sm.radius, 5, sm.radius);
+      }
+    }
+  }
+  for (let i = n; i < V3.smokePool.length; i++) V3.smokePool[i].visible = false;
+}
+
+function v3Camera() {
+  const cam = V3.camera;
+  const i = V3.mode === 'player' ? idxAt(D.camera, t) : -1;
+  if (i >= 0) {   // replay the recorded camera: world position, forward vector, vertical FOV
+    const a = D.camera[i], nb = D.camera[i + 1], b = nb && nb[0] - a[0] < 1 ? nb : a;
+    const f = b === a ? 0 : Math.min(1, (t - a[0]) / (b[0] - a[0])), L = k => a[k] + (b[k] - a[k]) * f;
+    cam.position.set(L(1), L(2), -L(3));
+    cam.lookAt(L(1) + L(4), L(2) + L(5), -(L(3) + L(6)));
+    const fov = L(7) * 180 / Math.PI;
+    if (Math.abs(cam.fov - fov) > .01) { cam.fov = fov; cam.updateProjectionMatrix(); }
+  } else {
+    if (cam.fov !== 50) { cam.fov = 50; cam.updateProjectionMatrix(); }
+    let target = orbit.target;
+    if (V3.mode === 'follow') {
+      const me = ships.find(s => s.relation === 'self'), st = me && shipState(me);
+      if (st) target = new THREE.Vector3(st.x, 0, -st.z);
+    }
+    const cp = Math.cos(orbit.pitch);
+    cam.position.set(target.x + orbit.dist * cp * Math.sin(orbit.yaw), target.y + orbit.dist * Math.sin(orbit.pitch),
+                     target.z + orbit.dist * cp * Math.cos(orbit.yaw));
+    cam.lookAt(target);
+  }
+  cam.updateMatrixWorld();
+}
+
+function v3Controls(canvas) {
+  canvas.addEventListener('contextmenu', e => e.preventDefault());
+  canvas.addEventListener('pointerdown', e => {
+    orbit.drag = { x: e.clientX, y: e.clientY, pan: e.button === 2 || e.shiftKey };
+    canvas.setPointerCapture(e.pointerId);
+  });
+  canvas.addEventListener('pointermove', e => {
+    const d = orbit.drag;
+    if (!d || V3.mode === 'player') return;
+    const dx = e.clientX - d.x, dy = e.clientY - d.y;
+    d.x = e.clientX; d.y = e.clientY;
+    if (d.pan && V3.mode === 'orbit') {
+      const k = orbit.dist * .0016, sy = Math.sin(orbit.yaw), cy = Math.cos(orbit.yaw);
+      orbit.target.x += -cy * dx * k - sy * dy * k;
+      orbit.target.z += sy * dx * k - cy * dy * k;
+    } else {
+      orbit.yaw -= dx * .005;
+      orbit.pitch = Math.max(.05, Math.min(1.5, orbit.pitch + dy * .005));
+    }
+  });
+  canvas.addEventListener('pointerup', () => { orbit.drag = null; });
+  canvas.addEventListener('wheel', e => {
+    e.preventDefault();
+    orbit.dist = Math.max(8, Math.min(V3.size * 4, orbit.dist * (e.deltaY > 0 ? 1.12 : 1 / 1.12)));
+  }, { passive: false });
+}
+
+function v3Loop() {
+  if (!V3.active) return;
+  const r = document.getElementById('gl').getBoundingClientRect();
+  if (r.width !== V3.w || r.height !== V3.h) {
+    V3.w = r.width; V3.h = r.height;
+    V3.renderer.setSize(r.width, r.height, false);
+    V3.camera.aspect = r.width / Math.max(1, r.height); V3.camera.updateProjectionMatrix();
+  }
+  v3Camera();
+  v3Update();
+  V3.renderer.render(V3.scene, V3.camera);
+  requestAnimationFrame(v3Loop);
+}
+
+const modeBtn = document.getElementById('mode'), cam3d = document.getElementById('cam3d'), scale3d = document.getElementById('scale3d');
+function setMode3D(on) {
+  if (on && (!has3D || !D)) return;
+  V3.active = on;
+  map.hidden = on;
+  for (const el of [document.getElementById('gl'), document.getElementById('labels'), cam3d, scale3d]) el.hidden = !on;
+  modeBtn.textContent = on ? '2D' : '3D';
+  if (on) { if (!V3.built) v3Build(); requestAnimationFrame(v3Loop); }
+  else { resize(); }
+  draw();
+}
+function setCamMode(mode) {
+  V3.mode = cam3d.value = mode;
+  if (mode === 'follow') { orbit.dist = 38; orbit.pitch = .3; }
+  if (mode === 'orbit' && V3.built) { orbit.dist = V3.size * .85; orbit.pitch = .85; }
+}
+modeBtn.addEventListener('click', () => setMode3D(!V3.active));
+cam3d.addEventListener('change', () => setCamMode(cam3d.value));
+scale3d.addEventListener('change', () => { V3.scale = Number(scale3d.value); });
+if (!has3D) { modeBtn.disabled = true; modeBtn.title = '3D needs three.js: open the page made by python -m wowsreplay'; }
+
+// ------------------------------------------------------------------ playback
+const playBtn = document.getElementById('play'), speedSel = document.getElementById('speed');
+function setPlaying(p) { playing = p; playBtn.textContent = p ? 'Pause' : 'Play'; if (p) { lastFrame = performance.now(); requestAnimationFrame(tick); } }
+function tick(now) {
+  if (!playing || !D) return;
+  t += (now - lastFrame) / 1000 * Number(speedSel.value);
+  lastFrame = now;
+  if (t >= D.meta.end) { t = D.meta.end; setPlaying(false); }
+  draw();
+  if (playing) requestAnimationFrame(tick);
+}
+playBtn.addEventListener('click', () => D && setPlaying(!playing));
+document.addEventListener('keydown', e => {
+  if (!D || e.target.tagName === 'INPUT' || e.target.tagName === 'SELECT') return;
+  if (e.code === 'Space') { e.preventDefault(); setPlaying(!playing); }
+  if (e.code === 'ArrowRight') { t = Math.min(D.meta.end, t + 5); draw(); }
+  if (e.code === 'ArrowLeft') { t = Math.max(0, t - 5); draw(); }
+});
+window.addEventListener('resize', () => { resize(); draw(); });
+
+// ------------------------------------------------------------------ loading
+const drop = document.getElementById('drop');
+function readFile(file) {
+  file.text().then(txt => load(JSON.parse(txt))).catch(err => {
+    drop.querySelector('.sub').textContent = `Could not load ${file.name}: ${err.message}`;
+  });
+}
+document.getElementById('file').addEventListener('change', e => e.target.files[0] && readFile(e.target.files[0]));
+document.addEventListener('dragover', e => e.preventDefault());
+document.addEventListener('drop', e => { e.preventDefault(); if (e.dataTransfer.files[0]) readFile(e.dataTransfer.files[0]); });
+if (EMBEDDED) load(EMBEDDED); else drop.classList.add('show');
+</script>
+</body>
+</html>
