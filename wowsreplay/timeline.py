@@ -89,7 +89,10 @@ class TimelineBuilder:
         self.target_lock = []              # [t, vid or 0]
         self.controls = []                 # [t, kind, level]
         self.shots = []                    # [t, owner, x0, z0, x1, z1, flight_s, gun, pitch_rad]
-        self.torpedoes = []                # [t, owner, x, z, dirx, dirz]
+        # [t, owner, x, z, dirx, dirz, end_t, end_x, end_z, end_hitType, path]: dir is per second; end from
+        # receiveShotKills (None if never seen); path = [[t, x, z]] course points of maneuvering / homing torpedoes
+        self.torpedoes = []
+        self._torp = {}                    # (owner, shotID) -> torpedo row still running
         self.chat = []                     # [t, sender, channel, text]
         self.consumables = []              # [t, vid, label, duration_s, range | None]
         self.smokes = {}                   # smoke entity -> {radius, frames: [[t, [x, z, ...]]], end}
@@ -337,6 +340,9 @@ class TimelineBuilder:
             for k in pack['kills']:
                 x, _y, z = k['pos']
                 self.hits.append([_r(t), pack['ownerID'], pack['hitType'], _r(x), _r(z)])
+                row = self._torp.pop((pack['ownerID'], k['shotID']), None)
+                if row:
+                    row[6:10] = [_r(t), _r(x), _r(z), pack['hitType']]
 
     def m_Avatar_receiveExplosions(self, t, a):
         for e in a[0]:
@@ -397,7 +403,23 @@ class TimelineBuilder:
         for pack in a[0]:
             for tp in pack['torpedoes']:
                 (x, _, z), (dx, _, dz) = tp['pos'], tp['dir']
-                self.torpedoes.append([_r(t), pack['ownerID'], _r(x), _r(z), _r(dx, 3), _r(dz, 3)])
+                row = [_r(t), pack['ownerID'], _r(x), _r(z), _r(dx, 3), _r(dz, 3), None, None, None, None, []]
+                self.torpedoes.append(row)
+                self._torp[(pack['ownerID'], tp['shotID'])] = row
+
+    def _torp_point(self, t, owner, shot, pos):
+        row = self._torp.get((owner, shot))
+        if row:
+            row[10].append([_r(t), _r(pos[0]), _r(pos[2])])
+
+    def m_Avatar_receiveTorpedoDirection(self, t, a):     # owner, shotID, pos, ... (maneuvering / homing)
+        self._torp_point(t, a[0], a[1], a[2])
+
+    def m_Avatar_receiveTorpedoManeuverEnd(self, t, a):   # owner, shotID, pos, yaw, ...
+        self._torp_point(t, a[0], a[1], a[2])
+
+    def m_Avatar_receiveTorpedoSynchronization(self, t, a):
+        self._torp_point(t, a['ownerID'], a['shotID'], a['serverPos'])
 
     def m_Avatar_updateMinimapVisionInfo(self, t, a):
         for item in a[0]:

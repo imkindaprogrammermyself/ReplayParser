@@ -155,6 +155,7 @@ function load(data) {
   deathOf = Object.fromEntries(D.deaths.map(d => [d[1], d]));
   D.shots.sort((a, b) => a[0] - b[0]);
   D.torpedoes.sort((a, b) => a[0] - b[0]);
+  prepTorpedoes();
   prepEvents();
   document.getElementById('drop').classList.remove('show');
   // deep links: #t=450 (moment), &view=3d, &cam=orbit|follow|player, &dist= &pitch= &yaw= (camera)
@@ -474,14 +475,43 @@ function drawShells(ctx) {
   ctx.globalAlpha = 1;
 }
 
+// torpedoes: [t, owner, x, z, dirx, dirz, endT, endX, endZ, endHitType, path [[t, x, z]]]. Position comes from
+// launch -> course points (maneuvering / homing) -> where receiveShotKills ended it; without an end it runs on
+// along its last heading for TORP_LIFE s
+function prepTorpedoes() {
+  D._torpLife = TORP_LIFE;
+  for (const tp of D.torpedoes) {
+    const pts = [[tp[0], tp[2], tp[3]], ...(tp[10] || []).filter(p => p[0] >= tp[0]).sort((a, b) => a[0] - b[0])];
+    if (tp[6] != null) pts.push([tp[6], tp[7], tp[8]]);
+    tp._pts = pts; tp._end = tp[6] != null ? tp[6] : tp[0] + TORP_LIFE;
+    tp._speed = Math.hypot(tp[4], tp[5]); tp._guided = !!(tp[10] && tp[10].length);
+    D._torpLife = Math.max(D._torpLife, tp._end - tp[0]);
+  }
+}
+function torpPos(tp, tt) {   // [x, z] at tt, or null outside its run
+  if (tt < tp[0] || tt > tp._end) return null;
+  const pts = tp._pts, i = Math.max(0, idxAt(pts, tt)), a = pts[i], b = pts[i + 1];
+  if (b) { const f = b[0] > a[0] ? (tt - a[0]) / (b[0] - a[0]) : 1; return [a[1] + (b[1] - a[1]) * f, a[2] + (b[2] - a[2]) * f]; }
+  let hx = tp[4], hz = tp[5];   // past the last point: keep going along the last heading at launch speed
+  if (i > 0) { const p = pts[i - 1], d = Math.hypot(a[1] - p[1], a[2] - p[2]); if (d > .01) { hx = (a[1] - p[1]) / d * tp._speed; hz = (a[2] - p[2]) / d * tp._speed; } }
+  return [a[1] + hx * (tt - a[0]), a[2] + hz * (tt - a[0])];
+}
+function torpWake(tp, n, step) {   // positions at t, t - step, ... (n of them, stopping at launch)
+  const out = [];
+  for (let k = 0; k < n; k++) { const p = torpPos(tp, Math.max(tp[0], t - k * step)); if (p) out.push(p); if (t - k * step <= tp[0]) break; }
+  return out;
+}
 function drawTorpedoes(ctx) {
   const tp = D.torpedoes;
-  for (let i = Math.max(0, idxAt(tp, t - TORP_LIFE)); i < tp.length && tp[i][0] <= t; i++) {
-    const [t0, owner, x, z, dx, dz] = tp[i], dt = t - t0;
-    if (dt < 0 || dt > TORP_LIFE) continue;
-    const X = sx(x + dx * dt), Y = sy(z + dz * dt), len = Math.hypot(dx, dz) || 1;
-    ctx.strokeStyle = colorOf(byId[owner]); ctx.globalAlpha = .9 * (1 - dt / TORP_LIFE); ctx.lineWidth = 2;
-    ctx.beginPath(); ctx.moveTo(X, Y); ctx.lineTo(X - dx / len * 8, Y + dz / len * 8); ctx.stroke();
+  for (let i = Math.max(0, idxAt(tp, t - D._torpLife)); i < tp.length && tp[i][0] <= t; i++) {
+    const w = torpWake(tp[i], 6, .5);
+    if (w.length < 1) continue;
+    ctx.strokeStyle = colorOf(byId[tp[i][1]]); ctx.lineWidth = tp[i]._guided ? 2.5 : 2;
+    ctx.globalAlpha = .9; ctx.beginPath(); ctx.moveTo(sx(w[0][0]), sy(w[0][1]));
+    for (const p of w.slice(1)) ctx.lineTo(sx(p[0]), sy(p[1]));
+    if (w.length === 1) ctx.lineTo(sx(w[0][0]) + 1, sy(w[0][1]));
+    ctx.stroke();
+    if (tp[i]._guided) { ctx.beginPath(); ctx.arc(sx(w[0][0]), sy(w[0][1]), 2.5, 0, Math.PI * 2); ctx.fillStyle = ctx.strokeStyle; ctx.fill(); }
   }
   ctx.globalAlpha = 1;
 }
@@ -674,7 +704,7 @@ function v3Build() {
   V3.shellPts = v3Dyn(THREE.Points, 3000, new THREE.PointsMaterial({ size: 3, vertexColors: true, sizeAttenuation: false }));
   V3.shellTails = v3Dyn(THREE.LineSegments, 6000, new THREE.LineBasicMaterial({ vertexColors: true, transparent: true, opacity: .55 }));
   V3.torpPts = v3Dyn(THREE.Points, 400, new THREE.PointsMaterial({ size: 4, vertexColors: true, sizeAttenuation: false }));
-  V3.torpWakes = v3Dyn(THREE.LineSegments, 800, new THREE.LineBasicMaterial({ vertexColors: true, transparent: true, opacity: .6 }));
+  V3.torpWakes = v3Dyn(THREE.LineSegments, 4000, new THREE.LineBasicMaterial({ vertexColors: true, transparent: true, opacity: .6 }));
   V3.camLine = v3Dyn(THREE.LineSegments, 16, new THREE.LineBasicMaterial({ vertexColors: true }));
   // battle events: shell endings / explosions as points, smoke puffs as translucent cylinders
   V3.planePts = v3Dyn(THREE.Points, 400, new THREE.PointsMaterial({ size: 7, vertexColors: true, sizeAttenuation: false }));
@@ -1035,10 +1065,11 @@ function v3Update() {
   }
   if (opts.torps) {
     const tp = D.torpedoes;
-    for (let i = Math.max(0, idxAt(tp, t - TORP_LIFE)); i < tp.length && tp[i][0] <= t; i++) {
-      const [t0, owner, x, z, dx, dz] = tp[i], dt = t - t0, back = Math.max(0, dt - 4), col = relCol(owner);
-      v3Add(V3.torpPts, x + dx * dt, .3, -(z + dz * dt), col);
-      v3Add(V3.torpWakes, x + dx * back, .2, -(z + dz * back), col); v3Add(V3.torpWakes, x + dx * dt, .2, -(z + dz * dt), col);
+    for (let i = Math.max(0, idxAt(tp, t - D._torpLife)); i < tp.length && tp[i][0] <= t; i++) {
+      const w = torpWake(tp[i], 9, .5), col = relCol(tp[i][1]);
+      if (!w.length) continue;
+      v3Add(V3.torpPts, w[0][0], .3, -w[0][1], col);
+      for (let k = 1; k < w.length; k++) { v3Add(V3.torpWakes, w[k - 1][0], .2, -w[k - 1][1], col); v3Add(V3.torpWakes, w[k][0], .2, -w[k][1], col); }
     }
   }
   const c = valAt(D.camera, t, null);

@@ -92,6 +92,20 @@ class ReplayTests(unittest.TestCase):
                 for sm in d['smokes']:
                     self.assertTrue(all(len(f[1]) % 2 == 0 for f in sm['frames']))
 
+    def test_torpedo_ends(self):
+        """Torpedoes end where receiveShotKills says; straight ones end on their launch line."""
+        for r, d in self.each():
+            with self.subTest(replay=os.path.basename(r)):
+                ended = [tp for tp in d['torpedoes'] if tp[6] is not None]
+                self.assertGreaterEqual(len(ended), .95 * len(d['torpedoes']))
+                for t0, owner, x, z, dx, dz, t1, x1, z1, hit, path in ended:
+                    self.assertTrue(0 <= t1 - t0 < 200, (t0, t1))
+                    if not path:
+                        err = math.hypot(x + dx * (t1 - t0) - x1, z + dz * (t1 - t0) - z1)
+                        self.assertLess(err, 5, (owner, t0))
+                    else:
+                        self.assertTrue(all(t0 <= p[0] <= t1 + 1 for p in path))
+
     def test_burn_flood_bits(self):
         """burningFlags = 4 burn nodes (bits 0-3) + 2 flood nodes (bits 4-5); a ram floods the survivor."""
         for r, d in self.each():
