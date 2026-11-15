@@ -222,7 +222,8 @@ const esc = s => String(s).replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;',
 // ------------------------------------------------------------------ state
 let D, ships, byId, deathOf, t = 0, playing = false, lastFrame = 0, mapImg = null;
 const opts = { names: true, trails: true, shells: true, torps: true, planes: true, hits: true, smoke: true, consumables: true,
-               fires: true, floods: true, camera: true, ghosts: true, card: true, aim: true, paths: true };
+               fires: true, floods: true, camera: true, ghosts: true, card: true, aim: true, paths: true,
+               pings: true, spotting: true };
 
 function load(data) {
   D = data;
@@ -514,6 +515,8 @@ function draw2D() {
   drawLock(ctx, states);
   if (opts.consumables) states.forEach(st => st && drawConsumableRings(ctx, st));
   states.forEach(st => st && drawShip(ctx, st));
+  if (opts.spotting) drawSpotting(ctx, states);
+  if (opts.pings) drawPings(ctx);
   if (opts.aim) drawAim(ctx);
   if (opts.camera) drawCamera(ctx);
 }
@@ -958,6 +961,104 @@ function drawAim(ctx) {   // where the selected ship's guns point: dashed line +
   ctx.fillText(kmText(a.range), X + 12, Y);
   ctx.restore();
 }
+// spotting. Vehicle.visibilityFlags bits, checked against what was around each ship: 1 ships (the baseline),
+// 2 and 256 aircraft (0.14 -> 0.61 and 0.04 -> 0.33 with enemy planes within 2.7 km), 16 radar (0.02 -> 0.89 inside
+// an enemy radar's range). Bit 64 stays unnamed (no clear link). Own ship only: its detection radii
+// (Avatar.visibilityDistances, incl. the firing bloom) and the enemies it spots itself (Avatar.spottedEntities).
+const spotFlags = id => (valAt(D.detected[id], t, [0, 0])[1]) || 0;
+function spottedBy(id) {
+  const f = spotFlags(id), out = [];
+  if (f & 1) out.push('ships');
+  if (f & (2 | 256)) out.push('planes');
+  if (f & 16) out.push('radar');
+  return out;
+}
+const ownSpots = () => (D.ownSpots && valAt(D.ownSpots, t, [0, []])[1]) || [];
+function drawSpotting(ctx, states) {
+  const me = ships.find(x => x.relation === 'self'), ms = me && shipState(me);
+  if (ms && !ms.dead) {
+    const v = D.ownVis && valAt(D.ownVis, t, null), X = sx(ms.x), Y = sy(ms.z);
+    if (v) {   // how close an enemy must be to see own ship: by ships (dashed), by planes (dotted)
+      ctx.save(); ctx.strokeStyle = 'rgba(226, 232, 240, .55)'; ctx.lineWidth = 1;
+      ctx.setLineDash([7, 5]); ctx.beginPath(); ctx.arc(X, Y, v[1] * view.scale, 0, Math.PI * 2); ctx.stroke();
+      ctx.setLineDash([1.5, 4]); ctx.beginPath(); ctx.arc(X, Y, v[2] * view.scale, 0, Math.PI * 2); ctx.stroke();
+      ctx.setLineDash([]); ctx.font = '10px system-ui'; ctx.fillStyle = 'rgba(226, 232, 240, .7)'; ctx.textAlign = 'center';
+      ctx.fillText(`seen at ${kmText(v[1])}`, X, Y - v[1] * view.scale - 4);
+      ctx.restore();
+    }
+    ctx.save(); ctx.strokeStyle = COLORS.self; ctx.globalAlpha = .5; ctx.setLineDash([2, 4]); ctx.lineWidth = 1;
+    for (const id of ownSpots()) {   // enemies own ship is spotting right now
+      const s = byId[id], st = s && shipState(s);
+      if (st && !st.dead) { ctx.beginPath(); ctx.moveTo(X, Y); ctx.lineTo(sx(st.x), sy(st.z)); ctx.stroke(); }
+    }
+    ctx.restore();
+  }
+  ctx.font = 'bold 9px system-ui'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+  for (const st of states) {   // radar / plane spotting badges
+    if (!st || st.dead || st.ghost) continue;
+    const f = spotFlags(st.s.id), X = sx(st.x) - 15, Y = sy(st.z) + 2;
+    const badges = [];
+    if (f & 16) badges.push(['R', '#a78bfa']);
+    if (f & (2 | 256)) badges.push(['✈', '#fbbf24']);
+    badges.forEach(([txt, col], i) => { ctx.fillStyle = col; ctx.fillText(txt, X - i * 9, Y); });
+  }
+}
+// submarine sonar pings: [t, owner, x, z, yaw, speed, maxDist, endT, endX, endZ, hit]; a hit marks the ship for 25 s,
+// a second hit while marked for 65 s (GameParams PingerGun sectorParams lifetimes; maxWaveHits 2)
+const PING_LIFE = [25, 65];
+let _pingMarks = null;
+function pingMarksBuild() {
+  _pingMarks = {};
+  for (const p of D.pings || []) {
+    if (p[7] == null || p[10] !== 1) continue;
+    let best = null, bd = 25;
+    for (const s of ships) {   // the ship at the hit point
+      const owner = byId[p[1]];
+      if (!owner || s.team === owner.team) continue;
+      const a = sample(D.tracks[s.id], p[7]) || sample(D.minimap[s.id], p[7]);
+      const d = a ? Math.hypot(a[0] - p[8], a[1] - p[9]) : 1e9;
+      if (d < bd) { bd = d; best = s; }
+    }
+    if (best) (_pingMarks[best.id] || (_pingMarks[best.id] = [])).push([p[7], p[1]]);
+  }
+}
+function pingMark(id) {   // {n: 1 | 2, left: s} or null
+  if (!_pingMarks) pingMarksBuild();
+  let n = 0, until = -1;
+  for (const [t0] of _pingMarks[id] || []) {
+    if (t0 > t) break;
+    n = t0 < until ? Math.min(2, n + 1) : 1;
+    until = t0 + PING_LIFE[n - 1];
+  }
+  return n && t < until ? { n, left: until - t } : null;
+}
+function drawPings(ctx) {
+  for (const p of D.pings || []) {
+    const [t0, owner, x, z, yaw, speed, dist] = p, tEnd = p[7] != null ? p[7] : t0 + dist / speed;
+    if (t < t0 || t > tEnd + 1.5) continue;
+    const col = colorOf(byId[owner]), dx = Math.sin(yaw), dz = Math.cos(yaw);
+    ctx.save(); ctx.strokeStyle = col;
+    if (t <= tEnd) {   // the wave: a short front across its path, and its trace back to the sub
+      const d = speed * (t - t0), X = sx(x + dx * d), Y = sy(z + dz * d), w = Math.max(6, 9 * view.scale);
+      ctx.globalAlpha = .35; ctx.lineWidth = 1; ctx.setLineDash([2, 3]);
+      ctx.beginPath(); ctx.moveTo(sx(x), sy(z)); ctx.lineTo(X, Y); ctx.stroke(); ctx.setLineDash([]);
+      ctx.globalAlpha = .95; ctx.lineWidth = 2.5; ctx.beginPath();
+      ctx.moveTo(X - dz * w, Y - dx * w); ctx.lineTo(X + dz * w, Y + dx * w); ctx.stroke();
+    } else if (p[10] === 1) {   // hit flash
+      const f = (t - tEnd) / 1.5;
+      ctx.globalAlpha = 1 - f; ctx.lineWidth = 2; ctx.beginPath(); ctx.arc(sx(p[8]), sy(p[9]), 4 + f * 14, 0, Math.PI * 2); ctx.stroke();
+    }
+    ctx.restore();
+  }
+  ctx.font = 'bold 10px system-ui'; ctx.textAlign = 'left'; ctx.textBaseline = 'middle';
+  for (const s of ships) {   // ping-mark badge on marked ships
+    const m = pingMark(s.id), st = m && shipState(s);
+    if (!st || st.dead) continue;
+    const X = sx(st.x) + 12, Y = sy(st.z) + 6;
+    ctx.strokeStyle = '#22d3ee'; ctx.lineWidth = 1.2;
+    for (let i = 0; i < m.n; i++) { ctx.beginPath(); ctx.arc(X, Y, 3 + i * 3, -.9, .9); ctx.stroke(); }
+  }
+}
 function drawCamera(ctx) {
   const c = valAt(D.camera, t, null);
   if (!c || t - c[0] > 2) return;
@@ -1143,6 +1244,11 @@ function updateCard() {
     row('Sunk', `<b class="bad">${fmt(d[0])}</b>${killer && d[2] !== s.id ? ` by <b>${esc(killer.name)}</b>` : ''} <span>${esc(String(d[3] || '').toLowerCase())}</span>`);
   } else {
     if (kn != null) row('Speed', `<b>${kn.toFixed(1)} kn</b>${rud != null ? ` · ${rudderText(rud)}` : ''}`);
+    const how = spottedBy(s.id);
+    if (how.length) row('Spotted by', `<b>${how.join(', ')}</b>`);
+    if (s.relation === 'self') { const n = ownSpots().length; if (n) row('Spotting', `<b>${n}</b> enem${n > 1 ? 'ies' : 'y'}`); }
+    const pm = pingMark(s.id);
+    if (pm) row('Ping marks', `<b style="color:#22d3ee">×${pm.n}</b> ${Math.ceil(pm.left)}s`);
     if (depth < -1) row('Depth', `<b>${Math.round(depth)} m</b>`);
     if (st && st.ghost) row('Position', '<span class="warn">last seen</span>');
     const fires = fireCount(s.id), floods = floodCount(s.id);

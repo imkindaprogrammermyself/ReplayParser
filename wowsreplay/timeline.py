@@ -117,6 +117,13 @@ class TimelineBuilder:
         self.rudder = defaultdict(list)    # vid -> [t, rudder -1..1]  (ruddersAngle / 30 deg, + = starboard)
         self._torp = {}                    # (owner, shotID) -> torpedo row still running
         self._shot = {}                    # (owner, shotID) -> shell row in flight (ids never clash with torps)
+        # submarine sonar pings: [t, owner, x, z, yaw, speed u/s, max distance, end_t, end_x, end_z, end_hitType]
+        # (speed is serverTimeLeft-style: x 1/SHELL_TIME_FACTOR matches the measured travel; end from
+        # receivePingerShotKills, hitType 1 = hit a ship)
+        self.pings = []
+        self._ping = {}
+        self.own_vis = []                  # [t, byShip, byPlane, bySmoke] own ship's detection radii (Avatar)
+        self.own_spots = []                # [t, [vehicle ids]] enemies the own ship itself spots (Avatar)
         self.chat = []                     # [t, sender, channel, text]
         self.consumables = []              # [t, vid, label, duration_s, range | None]
         self.smokes = {}                   # smoke entity -> {radius, frames: [[t, [x, z, ...]]], end}
@@ -244,6 +251,12 @@ class TimelineBuilder:
         key = (edef.name, prop.name)
         if key == ('Vehicle', 'health'):
             self.health[eid].append([_r(t), _r(value, 0)])
+        elif key == ('Avatar', 'visibilityDistances') and isinstance(value, dict):
+            row = [_r(t)] + [_r(value.get(k) or 0) for k in ('byShip', 'byPlane', 'bySmoke')]
+            if not self.own_vis or self.own_vis[-1][1:] != row[1:]:
+                self.own_vis.append(row)
+        elif key == ('Avatar', 'spottedEntities'):
+            self.own_spots.append([_r(t), sorted(int(v) for v in value or ())])
         elif key == ('Vehicle', 'visibilityFlags'):
             self.detected[eid].append([_r(t), value])
         elif key == ('Vehicle', 'buoyancyCurrentWaterline'):
@@ -562,6 +575,21 @@ class TimelineBuilder:
         if row:
             row[10].append([_r(t), _r(pos[0]), _r(pos[2])])
 
+    def m_Avatar_receivePingerShots(self, t, a):
+        for p in a[0]:
+            x, _y, z = p['pos']
+            row = [_r(t), p['ownerID'], _r(x), _r(z), _r(p['yaw'], 3), _r(p['speed'] / SHELL_TIME_FACTOR),
+                   _r(p['distance']), None, None, None, None]
+            self.pings.append(row)
+            self._ping[(p['ownerID'], p['shotID'])] = row
+
+    def m_Avatar_receivePingerShotKills(self, t, a):
+        for k in a[0]:
+            row = self._ping.pop((k['ownerID'], k['shotID']), None)
+            if row:
+                x, _y, z = k['pos']
+                row[7:11] = [_r(t), _r(x), _r(z), k['hitType']]
+
     def m_Avatar_receiveTorpedoDirection(self, t, a):     # owner, shotID, pos, ... (maneuvering / homing)
         self._torp_point(t, a[0], a[1], a[2])
 
@@ -694,6 +722,9 @@ class TimelineBuilder:
             'controls': self.controls,
             'shots': self.shots,
             'torpedoes': self.torpedoes,
+            'pings': self.pings,
+            'ownVis': self.own_vis,
+            'ownSpots': self.own_spots,
             'chat': self.chat,
             'parseErrors': dict(self.errors),
         }
