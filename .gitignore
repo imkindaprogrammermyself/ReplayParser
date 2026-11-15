@@ -11,4 +11,5 @@ out/
 wows_*/
 wowsreplay/data/maps/
 wowsreplay/data/models/
+wowsreplay/data/gui/
 tools/game_update.bat

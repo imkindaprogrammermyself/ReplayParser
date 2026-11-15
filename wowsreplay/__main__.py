@@ -11,6 +11,22 @@ VIEWER = os.path.join(os.path.dirname(__file__), '..', 'viewer', 'viewer.html')
 THREE_JS = os.path.join(os.path.dirname(__file__), '..', 'viewer', 'vendor', 'three-0.158.0.min.js')
 MAPS = os.path.join(os.path.dirname(__file__), 'data', 'maps')
 MODELS = os.path.join(os.path.dirname(__file__), 'data', 'models')
+GUI = os.path.join(os.path.dirname(__file__), 'data', 'gui')
+
+
+def load_icons(ships):
+    """The game's side icons per ship type (gui/ship_icons/<PXXX123>.png, + ship_dead_icons), as data URIs."""
+    out = {}
+    for key in sorted({s['ship'] for s in ships if s.get('ship')}):
+        icons = {}
+        for kind, folder in (('alive', 'ship_icons'), ('dead', 'ship_dead_icons')):
+            p = os.path.join(GUI, folder, key.split('_')[0] + '.png')
+            if os.path.isfile(p):
+                with open(p, 'rb') as f:
+                    icons[kind] = 'data:image/png;base64,' + base64.b64encode(f.read()).decode()
+        if icons:
+            out[key] = icons
+    return out
 
 
 def load_models(ships):
@@ -56,6 +72,7 @@ def main(argv=None):
     data = build_timeline(args.replay)
     data['map'] = None if args.no_map else load_map(data['meta']['map'])
     data['models'] = {} if args.no_map else load_models(data['ships'])
+    data['icons'] = {} if args.no_map else load_icons(data['ships'])
     if data['map'] and data['map']['minimapBounds']:
         data['meta']['bounds'] = data['map']['minimapBounds']   # show the whole map, like the game's minimap
     payload = json.dumps(data, separators=(',', ':'), ensure_ascii=False)

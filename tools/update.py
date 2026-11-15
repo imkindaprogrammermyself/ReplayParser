@@ -136,13 +136,19 @@ def plan(replays, refresh=False, quiet=False):
         print(f'versions not imported: {need_versions}. Only the version installed on the game PC can be pulled'
               f' (newest replay: {newest}).')
 
-    nothing = not (want_maps or dirs or need_versions or unknown or no_index)
+    gui = os.path.join(DATA, 'gui')
+    no_icon = sorted(s for s in ships if not os.path.isfile(os.path.join(gui, 'ship_icons', s.split('_')[0] + '.png')))
+    want_gui = refresh or bool(no_icon) or not os.path.isfile(os.path.join(gui, 'gui_files.txt'))
+    print(f'gui: {"pull ship icons + file list" if want_gui else "up to date"}'
+          + (f' ({len(no_icon)} ship types without an icon)' if no_icon else ''))
+
+    nothing = not (want_maps or dirs or need_versions or unknown or no_index or want_gui)
     if nothing:
         print('nothing to pull: everything the replays use is imported')
         if os.path.exists(BAT):
             os.remove(BAT)
         return False
-    write_bat(want_maps, dirs, want_ships)
+    write_bat(want_maps, dirs, want_ships, want_gui)
     if not quiet:
         print(f'\nwrote {os.path.relpath(BAT, ROOT)}. On the game PC, next to wowsunpack.exe:\n'
               f'    game_update.bat "C:\\path\\to\\World_of_Warships"\n'
@@ -202,7 +208,7 @@ endlocal
 '''
 
 
-def write_bat(maps, dirs, ships):
+def write_bat(maps, dirs, ships, gui=False):
     for s in list(maps) + list(dirs):
         if BAD_BATCH_CHARS & set(s):
             sys.exit(f'unexpected characters in path: {s}')
@@ -215,6 +221,10 @@ def write_bat(maps, dirs, ships):
         lines.append('echo assets.bin...\n' + x.format('content/assets.bin'))
         for i, d in enumerate(dirs, 1):
             lines.append(f'echo model {i}/{len(dirs)} {d.rsplit("/", 1)[1]}\n' + x.format(d + '/*'))
+    if gui:   # ship side icons (roster), everything minimap-related (class icons), and a list of all gui files
+        lines.append('echo gui...\n')
+        lines.append('"%UNPACK%" -l -x "%IDX%" -p "%PKG%" -I "gui/*" > "%OUT%\\gui_files.txt" 2>> "%LOG%"\n')
+        lines += [x.format(g) for g in ('gui/ship_icons/*', 'gui/ship_dead_icons/*', 'gui/*minimap*')]
     lines.append(TAIL)
     with open(BAT, 'w', encoding='ascii', newline='\r\n') as f:
         f.write(''.join(lines))
@@ -269,6 +279,9 @@ def do_import(zpath, replays, override=None, pages=True):
     if any(re.search(r'(^|/)spaces/[^/]+/terrain\.bin$', n) for n in names):
         print('--- maps')
         import_spaces.main([zpath])
+    n_gui = import_gui(z, names)
+    if n_gui:
+        print(f'--- gui: {n_gui} files -> wowsreplay/data/gui')
     if has('content/assets.bin'):
         print('--- ship models')
         if has('content/GameParams.data'):
@@ -280,6 +293,24 @@ def do_import(zpath, replays, override=None, pages=True):
         rebuild_and_check(replays)
     print('--- what is still missing')
     plan(replays)
+
+
+def import_gui(z, names):
+    """Copy gui/... files (ship icons, minimap icons) and gui_files.txt from an update zip to data/gui."""
+    n = 0
+    for raw, name in zip(z.namelist(), names):
+        if name.endswith('/'):
+            continue
+        m = re.search(r'(?:^|/)gui/(.+)$', name)
+        rel = m.group(1) if m else ('gui_files.txt' if name.endswith('gui_files.txt') else None)
+        if not rel or '..' in rel.split('/'):
+            continue
+        out = os.path.join(DATA, 'gui', *rel.split('/'))
+        os.makedirs(os.path.dirname(out), exist_ok=True)
+        with open(out, 'wb') as f:
+            f.write(z.read(raw))
+        n += 1
+    return n
 
 
 def rebuild_and_check(replays):

@@ -53,7 +53,8 @@
   .ship.dead { opacity: .4; }
   .ship.me { background: rgba(255, 209, 102, .08); }
   .ship .nm { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-  .ship .cls { color: var(--muted); font-size: 11px; text-align: right; }
+  .ship .cls { color: var(--muted); font-size: 11px; text-align: right; display: flex; align-items: center; gap: 6px; justify-content: flex-end; }
+  .ship .cls img { height: 14px; width: auto; opacity: .9; }
   .hp { grid-column: 1 / span 2; height: 4px; background: var(--panel-2); border-radius: 2px; overflow: hidden; }
   .hp i { display: block; height: 100%; }
   .ship .dm { grid-column: 1 / span 2; font-size: 11px; color: var(--muted); min-height: 0; }
@@ -660,6 +661,12 @@ tl.addEventListener('pointermove', e => { if (dragging) seekFromEvent(e); });
 tl.addEventListener('pointerup', () => { dragging = false; });
 
 // ------------------------------------------------------------------ sidebar
+// the game's side icon for this ship type (gui/ship_icons, embedded by python -m wowsreplay), if imported
+function shipIcon(s, dead) {
+  const ic = D.icons && D.icons[s.ship];
+  const src = ic && (dead && ic.dead || ic.alive);
+  return src ? `<img src="${src}" alt="">` : '';
+}
 function buildSide() {
   const m = D.meta, res = m.result;
   const outcome = !res ? '' : res.winnerTeamId === m.ownTeam ? '<span class="ally">Victory</span>' :
@@ -682,7 +689,7 @@ function buildSide() {
       .filter(s => side === 'ally' ? s.relation !== 'enemy' : s.relation === 'enemy')
       .map(s => `<div class="ship ${s.relation === 'self' ? 'me' : ''}" id="row-${s.id}">
         <div class="nm"><span class="${s.relation}">${esc(s.clan ? `[${s.clan}] ` : '')}${esc(s.name)}</span></div>
-        <div class="cls">${esc(shortShip(s.ship))} ${s.species ? esc(s.species[0]) : ''}${s.level || ''}</div>
+        <div class="cls">${shipIcon(s, false)}<span>${esc(shortShip(s.ship))} ${s.species ? esc(s.species[0]) : ''}${s.level || ''}</span></div>
         <div class="hp"><i style="width:100%;background:${colorOf(s)}"></i></div>
         <div class="dm" title="damage dealt / taken, as far as this replay saw it"></div>
         <div class="hits" title="shells this ship landed: citadels, penetrations, overpenetrations, ricochets"></div></div>`).join('');
@@ -702,6 +709,8 @@ function updateSide() {
     if (!row) continue;
     const hp = valAt(D.health[s.id], t, null), dead = deathOf[s.id] && t >= deathOf[s.id][0];
     row.classList.toggle('dead', !!dead);
+    const img = row.querySelector('.cls img'), ic = D.icons && D.icons[s.ship];
+    if (img && ic) { const want = dead && ic.dead || ic.alive; if (img.getAttribute('src') !== want) img.setAttribute('src', want); }
     row.querySelector('.hp i').style.width = `${dead ? 0 : hp && s.maxHealth ? Math.max(0, hp[1] / s.maxHealth * 100) : 100}%`;
     const dealt = valAt(D._dealt[s.id], t, [0, 0])[1], taken = valAt(D._taken[s.id], t, [0, 0])[1];
     const fires = fireCount(s.id), floods = floodCount(s.id), act = activeConsumables(s.id).map(c => c.label);
