@@ -55,6 +55,9 @@
     border-radius: 6px; padding: 5px 10px; font: inherit; cursor: pointer; }
   button:hover { border-color: #3b4f7a; }
   #timeline { width: 100%; height: 56px; display: block; cursor: pointer; }
+  #tltip { position: fixed; z-index: 20; transform: translate(-50%, calc(-100% - 8px)); pointer-events: none; white-space: nowrap;
+    background: rgba(11, 18, 32, .95); border: 1px solid var(--line); border-radius: 6px; padding: 4px 8px; font-size: 12px; color: var(--text); }
+  #tltip span { color: var(--muted); }
   #clock { font-variant-numeric: tabular-nums; min-width: 120px; text-align: right; color: var(--muted); }
   #clock b { color: var(--text); font-size: 15px; }
   h1 { font-size: 15px; margin: 0 0 2px; }
@@ -147,6 +150,10 @@
         <option value="orbit">Orbit</option><option value="follow">Follow ship</option>
         <option value="player">Player camera</option><option value="fly">Fly</option>
       </select>
+      <select id="marks" title="Event marks on the timeline (hover for details, click to jump there)">
+        <option value="all" selected>Marks: kills + ship</option><option value="kills">Marks: kills</option>
+        <option value="sel">Marks: selected ship</option><option value="none">Marks off</option>
+      </select>
       <select id="heat" title="Heatmap: where ships spent time">
         <option value="off" selected>Heatmap off</option><option value="all">Heat: all ships</option>
         <option value="ally">Heat: allies</option><option value="enemy">Heat: enemies</option>
@@ -160,6 +167,7 @@
       </select>
     </div>
     <canvas id="timeline"></canvas>
+    <div id="tltip" hidden></div>
     <div id="clock"></div>
   </div>
 </div>
@@ -997,13 +1005,65 @@ function drawTimeline() {
     ctx.stroke();
   }
   ctx.globalAlpha = 1;
-  for (const d of D.deaths) {
-    const victim = byId[d[1]];
-    ctx.fillStyle = colorOf(victim);
-    ctx.fillRect(X(d[0]) - 1, 0, 2, 10);
-    if (byId[d[2]] && byId[d[2]].relation === 'self') { ctx.beginPath(); ctx.arc(X(d[0]), 14, 2.5, 0, Math.PI * 2); ctx.fill(); }
+  for (const m of timelineMarks()) {   // row 0: kills; row 1: the selected ship's events
+    const x = X(m.t);
+    ctx.fillStyle = m.col; ctx.strokeStyle = m.col; ctx.lineWidth = 1.5;
+    if (m.row === 0) { ctx.fillRect(x - 1, 0, 2, 10); continue; }
+    const y = 17;
+    ctx.beginPath();
+    if (m.shape === 'tri') { ctx.moveTo(x, y - 4); ctx.lineTo(x + 3.5, y + 3); ctx.lineTo(x - 3.5, y + 3); ctx.closePath(); ctx.fill(); }
+    else if (m.shape === 'ring') { ctx.arc(x, y, 3.5, 0, Math.PI * 2); ctx.stroke(); }
+    else if (m.shape === 'bar') { ctx.fillRect(x - 1.5, y - 4, 3, 8); }
+    else { ctx.arc(x, y, 2.2, 0, Math.PI * 2); ctx.fill(); }
   }
   ctx.fillStyle = '#fff'; ctx.fillRect(X(t) - 1, 0, 2, H);
+}
+
+// timeline marks: kills (row 0) and the selected ship's citadels dealt, fires / floods taken, consumables, kills and
+// sinking (row 1). Hover shows what happened; clicking one jumps to 2 s before it.
+let _marks = [], _marksKey = null, _hoverMark = null;
+const marksSel = document.getElementById('marks');
+function timelineMarks() {
+  const mode = marksSel.value, sel = aimShip(), key = `${mode}|${sel && sel.id}`;
+  if (key === _marksKey) return _marks;
+  const nm = id => byId[id] ? byId[id].name : `#${id}`, out = [];
+  const why = c => String(c || '').toLowerCase().replace(/_/g, ' ');
+  if (mode === 'all' || mode === 'kills')
+    for (const d of D.deaths) out.push({ t: d[0], row: 0, col: colorOf(byId[d[1]]), text: `${esc(nm(d[2]))} sank ${esc(nm(d[1]))} <span>${esc(why(d[3]))}</span>` });
+  if (sel && (mode === 'all' || mode === 'sel')) {
+    const add = (t0, col, shape, text) => {   // merge the same event within 1 s (a salvo's citadels)
+      const last = out[out.length - 1];
+      if (last && last.row === 1 && last.base === text && t0 - last.t < 1) { last.n++; last.text = `${text} ×${last.n}`; return; }
+      out.push({ t: t0, row: 1, col, shape, text, base: text, n: 1 });
+    };
+    for (const t0 of ((D._hitTimes[sel.id] || {})[0x62] || [])) add(t0, '#ef4444', 'tri', `${esc(sel.name)}: citadel`);
+    let prev = 0;
+    for (const [t0, f] of (D.fires[sel.id] || [])) {
+      const now = f & ~prev; prev = f;
+      if (now & 0xf) add(t0, '#fb923c', 'bar', `${esc(sel.name)}: fire`);
+      if (now >> 4 & 3) add(t0, '#38bdf8', 'bar', `${esc(sel.name)}: flood`);
+    }
+    for (const c of (D._cons[sel.id] || [])) if (c[2] !== 'Hydrophone') add(c[0], consColor(c[2]), 'dot', `${esc(sel.name)}: ${esc(c[2])}`);
+    for (const d of D.deaths) {
+      if (d[2] === sel.id && d[1] !== sel.id) add(d[0], '#f8fafc', 'ring', `${esc(sel.name)} sank ${esc(nm(d[1]))} <span>${esc(why(d[3]))}</span>`);
+      if (d[1] === sel.id) add(d[0], colorOf(sel), 'ring', `${esc(sel.name)} sunk${d[2] !== sel.id ? ` by ${esc(nm(d[2]))}` : ''} <span>${esc(why(d[3]))}</span>`);
+    }
+  }
+  out.sort((a, b) => a.t - b.t);
+  _marks = out; _marksKey = key;
+  return out;
+}
+function markAt(e) {   // the mark under the pointer (within 5 px, in its row), or null
+  const r = tl.getBoundingClientRect(), x = e.clientX - r.left, y = e.clientY - r.top;
+  const row = y < 12 ? 0 : y < 24 ? 1 : -1;
+  if (row < 0) return null;
+  let best = null, bd = 5;
+  for (const m of timelineMarks()) {
+    if (m.row !== row) continue;
+    const d = Math.abs(m.t / D.meta.end * r.width - x);
+    if (d <= bd) { bd = d; best = m; }
+  }
+  return best;
 }
 
 function seekFromEvent(e) {
@@ -1012,8 +1072,21 @@ function seekFromEvent(e) {
   draw();
 }
 let dragging = false;
-tl.addEventListener('pointerdown', e => { if (!D) return; dragging = true; tl.setPointerCapture(e.pointerId); seekFromEvent(e); });
-tl.addEventListener('pointermove', e => { if (dragging) seekFromEvent(e); });
+tl.addEventListener('pointerdown', e => {
+  if (!D) return;
+  const m = markAt(e);
+  if (m) { t = Math.max(0, m.t - 2); draw(); return; }   // jump to just before the event
+  dragging = true; tl.setPointerCapture(e.pointerId); seekFromEvent(e);
+});
+tl.addEventListener('pointermove', e => {
+  if (dragging) return seekFromEvent(e);
+  if (!D) return;
+  const m = markAt(e), tip = document.getElementById('tltip');
+  tip.hidden = !m;
+  if (m) { tip.innerHTML = `<span>${fmt(m.t)}</span> ${m.text}`; tip.style.left = `${e.clientX}px`; tip.style.top = `${tl.getBoundingClientRect().top}px`; }
+});
+tl.addEventListener('pointerleave', () => { document.getElementById('tltip').hidden = true; });
+marksSel.addEventListener('change', draw);
 tl.addEventListener('pointerup', () => { dragging = false; });
 
 // ------------------------------------------------------------------ sidebar
