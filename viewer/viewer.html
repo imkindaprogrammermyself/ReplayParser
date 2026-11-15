@@ -32,6 +32,11 @@
   #maphint { position: absolute; left: 10px; bottom: 10px; background: rgba(11, 18, 32, .75); border: 1px solid var(--line);
     border-radius: 6px; padding: 5px 8px; font-size: 11px; color: var(--muted); pointer-events: none; }
   #maphint b { color: var(--text); }
+  #heatkey { position: absolute; right: 10px; bottom: 10px; background: rgba(11, 18, 32, .8); border: 1px solid var(--line);
+    border-radius: 6px; padding: 5px 8px; font-size: 11px; color: var(--muted); pointer-events: none; }
+  #heatkey i { display: block; width: 150px; height: 8px; border-radius: 2px; margin: 3px 0 2px;
+    background: linear-gradient(90deg, rgba(217, 89, 38, .05), rgba(217, 89, 38, .6) 35%, rgba(245, 154, 91, .8) 70%, rgba(253, 226, 200, .85)); }
+  #heatkey div { display: flex; justify-content: space-between; }
   .ship { cursor: pointer; }
   .ship.sel { outline: 1px solid var(--self); outline-offset: -1px; }
   #map { cursor: grab; }
@@ -116,6 +121,7 @@
     <div id="labels" hidden></div>
     <div id="flyhint" hidden></div>
     <div id="maphint" hidden></div>
+    <div id="heatkey" hidden></div>
     <div id="hud"></div>
     <div id="card"></div>
     <div id="drop"><div class="box">
@@ -136,6 +142,14 @@
       <select id="cam3d" title="3D camera" hidden>
         <option value="orbit">Orbit</option><option value="follow">Follow ship</option>
         <option value="player">Player camera</option><option value="fly">Fly</option>
+      </select>
+      <select id="heat" title="Heatmap: where ships spent time">
+        <option value="off" selected>Heatmap off</option><option value="all">Heat: all ships</option>
+        <option value="ally">Heat: allies</option><option value="enemy">Heat: enemies</option>
+        <option value="sel">Heat: selected ship</option>
+      </select>
+      <select id="heatwin" title="Heatmap time window" hidden>
+        <option value="0" selected>since start</option><option value="120">last 2 min</option>
       </select>
       <select id="scale3d" title="Ship size (1x = in-game scale)" hidden>
         <option value="1" selected>Ships 1x</option><option value="2">Ships 2x</option><option value="4">Ships 4x</option>
@@ -255,11 +269,12 @@ function selectShip(id, opts3d = true) {
   if (row) row.classList.add('sel');
   mapHint(); draw();
 }
-function mapHint() {
+function mapHint(heatText) {
   const el = document.getElementById('maphint');
   el.hidden = V3.active;
   if (!el.hidden) el.innerHTML = `<b>wheel</b> zoom ×${cam2.zoom.toFixed(1)} · <b>drag</b> pan · <b>click</b> a ship to follow · <b>double-click</b> reset`
-    + (selectedId != null && byId[selectedId] ? ` · following <b>${esc(byId[selectedId].name)}</b> (Esc)` : '');
+    + (selectedId != null && byId[selectedId] ? ` · following <b>${esc(byId[selectedId].name)}</b> (Esc)` : '')
+    + (heatText ? ` · heat <b>${heatText}</b>` : '');
 }
 // 2D map mouse: wheel zooms about the cursor (or the followed ship), drag pans (stops following), click picks a
 // ship, double-click shows the whole map again
@@ -282,7 +297,11 @@ map.addEventListener('pointerdown', e => {
   map.setPointerCapture(e.pointerId);
 });
 map.addEventListener('pointermove', e => {
-  if (!drag2) return;
+  if (!drag2) {   // hover: time spent under the cursor when the heatmap is on
+    const r = map.getBoundingClientRect(), v = D && heatAt(e.clientX - r.left, e.clientY - r.top);
+    mapHint(v == null ? null : v >= 120 ? `${(v / 60).toFixed(1)} ship-min here` : `${Math.round(v)} ship-s here`);
+    return;
+  }
   const dx = e.clientX - drag2.x, dy = e.clientY - drag2.y;
   drag2.x = e.clientX; drag2.y = e.clientY;
   if (!drag2.moved && Math.hypot(e.clientX - drag2.x0, e.clientY - drag2.y0) > 4) { drag2.moved = true; map.classList.add('dragging'); }
@@ -341,6 +360,101 @@ function draw() {
   updateCard();
 }
 
+// heatmap: where ships spent time. Each ship's known position every HEAT_STEP s (alive, fresh track or minimap)
+// is binned into a grid over the map; the grid counts samples from the window start up to t, updated
+// incrementally while playing forward. One hue (orange - the map water is blue), transparent at zero, brighter
+// and lighter with more time; square-root scaled so routes show next to the camping spots.
+const HEAT_STEP = 2, HEAT_N = 100, heatSel = document.getElementById('heat'), heatWin = document.getElementById('heatwin');
+const heat = { built: false, steps: [], nx: 0, nz: 0, grid: null, key: null, k0: 0, k1: -1, canvas: null };
+function heatBuild() {
+  const [x0, z0, x1, z1] = D.meta.bounds;
+  heat.nx = HEAT_N; heat.nz = Math.max(1, Math.round(HEAT_N * (z1 - z0) / (x1 - x0)));
+  const cw = (x1 - x0) / heat.nx, ch = (z1 - z0) / heat.nz;
+  for (let k = 0, tt = 0; tt <= D.meta.end; k++, tt += HEAT_STEP) {
+    const cells = [], who = [];
+    ships.forEach((s, si) => {
+      const death = deathOf[s.id];
+      if (death && tt >= death[0]) return;
+      const a = sample(D.tracks[s.id], tt), m = sample(D.minimap[s.id], tt);
+      const p = a && (!m || a[3] >= m[3] - .5) ? a : m;
+      if (!p || tt - p[3] > STALE) return;
+      const cx = Math.floor((p[0] - x0) / cw), cz = Math.floor((z1 - p[1]) / ch);
+      if (cx < 0 || cz < 0 || cx >= heat.nx || cz >= heat.nz) return;
+      cells.push(cz * heat.nx + cx); who.push(si);
+    });
+    heat.steps.push({ cells, who });
+  }
+  heat.grid = new Float32Array(heat.nx * heat.nz);
+  heat.canvas = document.createElement('canvas'); heat.canvas.width = heat.nx; heat.canvas.height = heat.nz;
+  heat.built = true;
+}
+function heatWants(mode) {
+  const sel = byId[selectedId] || ships.find(x => x.relation === 'self');
+  return si => mode === 'all' || (mode === 'sel' ? ships[si] === sel : mode === 'ally' ? ships[si].relation !== 'enemy' : ships[si].relation === 'enemy');
+}
+function heatUpdate(mode, win) {   // grid = samples in (t - win, t]; incremental when only moving forward
+  if (!heat.built) heatBuild();
+  const want = heatWants(mode), key = `${mode}|${win}|${selectedId}`;
+  const k1 = Math.min(heat.steps.length - 1, Math.floor(t / HEAT_STEP)), k0 = win ? Math.max(0, Math.floor((t - win) / HEAT_STEP) + 1) : 0;
+  const add = (k, d) => { const st = heat.steps[k]; for (let i = 0; i < st.cells.length; i++) if (want(st.who[i])) heat.grid[st.cells[i]] += d; };
+  if (key !== heat.key || k1 < heat.k1 || k0 < heat.k0 || k1 - heat.k1 > 400) {
+    heat.grid.fill(0); for (let k = k0; k <= k1; k++) add(k, 1);
+  } else {
+    for (let k = heat.k1 + 1; k <= k1; k++) add(k, 1);
+    for (let k = heat.k0; k < k0; k++) add(k, -1);
+  }
+  heat.key = key; heat.k0 = k0; heat.k1 = k1;
+}
+const HEAT_RAMP = [[217, 89, 38], [245, 154, 91], [253, 226, 200]];   // #d95926 -> #f59a5b -> #fde2c8
+function heatColor(f) {   // f 0..1 -> [r, g, b, a]
+  const x = f * (HEAT_RAMP.length - 1), i = Math.min(HEAT_RAMP.length - 2, Math.floor(x)), u = x - i;
+  const c = HEAT_RAMP[i].map((v, j) => v + (HEAT_RAMP[i + 1][j] - v) * u);
+  return [c[0], c[1], c[2], Math.round(255 * Math.min(.85, .04 + f * .85))];
+}
+function drawHeat(ctx) {
+  const mode = heatSel.value, key = document.getElementById('heatkey');
+  key.hidden = mode === 'off' || V3.active;
+  if (mode === 'off') return;
+  heatUpdate(mode, Number(heatWin.value));
+  const { nx, nz, grid } = heat, sm = new Float32Array(nx * nz);   // 3x3 smoothing
+  let max = 0;
+  for (let z = 0; z < nz; z++) for (let x = 0; x < nx; x++) {
+    let v = 0, w = 0;
+    for (let dz = -1; dz <= 1; dz++) for (let dx = -1; dx <= 1; dx++) {
+      const X = x + dx, Z = z + dz;
+      if (X < 0 || Z < 0 || X >= nx || Z >= nz) continue;
+      const k = dx || dz ? (dx && dz ? .5 : 1) : 2;
+      v += grid[Z * nx + X] * k; w += k;
+    }
+    sm[z * nx + x] = v / w; if (sm[z * nx + x] > max) max = sm[z * nx + x];
+  }
+  // top of the scale = 98th percentile of visited cells, so one ship parked all game (a carrier at spawn)
+  // saturates instead of washing everything else out
+  const vis = Array.from(sm).filter(v => v > 0).sort((a, b) => a - b);
+  const top = vis.length ? vis[Math.floor(vis.length * .98)] || max : 0;
+  heat.max = top; heat.sm = sm;
+  const g = heat.canvas.getContext('2d'), img = g.createImageData(nx, nz);
+  for (let i = 0; i < sm.length; i++) {
+    if (sm[i] <= top * 1e-3 || !top) continue;
+    img.data.set(heatColor(Math.sqrt(Math.min(1, sm[i] / top))), i * 4);
+  }
+  g.putImageData(img, 0, 0);
+  const [x0, z0, x1, z1] = D.meta.bounds;
+  ctx.save(); ctx.imageSmoothingEnabled = true; ctx.imageSmoothingQuality = 'high';
+  ctx.filter = `blur(${Math.max(1, (x1 - x0) / nx * view.scale * .8).toFixed(1)}px)`;   // soften the grid cells
+  ctx.drawImage(heat.canvas, sx(x0), sy(z1), (x1 - x0) * view.scale, (z1 - z0) * view.scale);
+  ctx.restore();
+  const peak = Math.round(top * HEAT_STEP);   // ship-seconds at the top of the scale (smoothed cells)
+  key.innerHTML = `Time spent here<i></i><div><span>little</span><span>≥ ${peak >= 120 ? `${Math.round(peak / 60)} ship-min` : `${peak} ship-s`}</span></div>`;
+}
+function heatAt(X, Y) {   // ship-seconds in the cell under a canvas point, or null
+  if (heatSel.value === 'off' || !heat.sm) return null;
+  const [x0, z0, x1, z1] = D.meta.bounds, x = wx(X), z = wz(Y);
+  const cx = Math.floor((x - x0) / (x1 - x0) * heat.nx), cz = Math.floor((z1 - z) / (z1 - z0) * heat.nz);
+  if (cx < 0 || cz < 0 || cx >= heat.nx || cz >= heat.nz) return null;
+  return heat.sm[cz * heat.nx + cx] * HEAT_STEP;
+}
+
 function draw2D() {
   applyView();
   const ctx = mctx, r = map.getBoundingClientRect();
@@ -359,6 +473,7 @@ function draw2D() {
   for (let g = Math.ceil(z0 / 100) * 100; g <= z1; g += 100) { ctx.moveTo(sx(x0), sy(g)); ctx.lineTo(sx(x1), sy(g)); }
   ctx.stroke();
 
+  drawHeat(ctx);
   drawZones(ctx);
   if (opts.smoke) drawSmoke(ctx);
   if (opts.shells) drawShells(ctx);
@@ -1607,11 +1722,14 @@ function v3Loop() {
 }
 
 const modeBtn = document.getElementById('mode'), cam3d = document.getElementById('cam3d'), scale3d = document.getElementById('scale3d');
+heatSel.addEventListener('change', () => { heatWin.hidden = heatSel.value === 'off' || V3.active; draw(); });
+heatWin.addEventListener('change', draw);
 function setMode3D(on) {
   if (on && (!has3D || !D)) return;
   V3.active = on;
   map.hidden = on;
   for (const el of [document.getElementById('gl'), document.getElementById('labels'), cam3d, scale3d]) el.hidden = !on;
+  heatSel.hidden = on; heatWin.hidden = on || heatSel.value === 'off';
   flyHint(); mapHint();
   modeBtn.textContent = on ? '2D' : '3D';
   if (on) { if (!V3.built) v3Build(); requestAnimationFrame(v3Loop); }

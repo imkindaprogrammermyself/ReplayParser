@@ -13,6 +13,10 @@ Page links can jump straight to a moment: `out/my.html#t=450&view=3d&cam=follow&
 
 2D map: mouse wheel zooms, drag pans, double-click shows the whole map. Click a ship (on the map, in 3D or its
 roster row) to follow it in both views; Esc goes back to your own ship.
+The ship card (top right; 'card' layer) shows the selected ship's health, speed, fires/floods, active
+consumables, module damage (turrets, torpedoes, secondaries, AA, engine, steering) and damage/hits.
+Heatmap (2D, bottom bar): where all ships / allies / enemies / the selected ship spent time, since the start or
+over the last 2 minutes; hover the map for the time spent under the cursor.
 
 3D cameras: Orbit, Follow (own or the clicked ship), Player camera (the recorded one) and Fly - WASD move, Q/E down/up,
 drag to look, Shift for x4, mouse wheel sets the flying speed. Fly links: `#t=450&view=3d&cam=fly&pos=x,height,z&look=yaw,pitch`.
