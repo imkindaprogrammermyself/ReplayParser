@@ -554,16 +554,31 @@ function smokePuffs(sm) {   // puff centres [x, z, ...] at t, or null
   if (t < sm.frames[0][0] || (sm.end != null && t >= sm.end)) return null;
   return valAt(sm.frames, t, null)[1];
 }
+// smoke: all puffs as one cloud - a single fill (overlaps don't darken) and only the cloud's outer edge outlined
+let smokeLayer = null;
 function drawSmoke(ctx) {
+  const circles = [];
   for (const sm of D.smokes) {
     const pts = smokePuffs(sm);
-    if (!pts) continue;
-    const R = sm.radius * view.scale;
-    ctx.fillStyle = 'rgba(203, 213, 225, .28)'; ctx.strokeStyle = 'rgba(226, 232, 240, .55)'; ctx.lineWidth = 1;
-    for (let i = 0; i < pts.length; i += 2) {
-      ctx.beginPath(); ctx.arc(sx(pts[i]), sy(pts[i + 1]), R, 0, Math.PI * 2); ctx.fill(); ctx.stroke();
-    }
+    if (pts) for (let i = 0; i < pts.length; i += 2) circles.push([sx(pts[i]), sy(pts[i + 1]), sm.radius * view.scale]);
   }
+  if (!circles.length) return;
+  const path = (c, grow) => {
+    c.beginPath();
+    for (const [X, Y, R] of circles) { c.moveTo(X + R + grow, Y); c.arc(X, Y, R + grow, 0, Math.PI * 2); }
+  };
+  ctx.fillStyle = 'rgba(203, 213, 225, .3)'; path(ctx, 0); ctx.fill();
+  // outline = (cloud grown by 1.2 px) minus the cloud, on a scratch canvas the size of the map
+  if (!smokeLayer || smokeLayer.width !== map.width || smokeLayer.height !== map.height) {
+    smokeLayer = document.createElement('canvas'); smokeLayer.width = map.width; smokeLayer.height = map.height;
+  }
+  const g = smokeLayer.getContext('2d');
+  g.setTransform(1, 0, 0, 1, 0, 0); g.clearRect(0, 0, smokeLayer.width, smokeLayer.height);
+  g.setTransform(ctx.getTransform());
+  g.fillStyle = 'rgba(226, 232, 240, .65)'; path(g, 1.2); g.fill();
+  g.globalCompositeOperation = 'destination-out'; path(g, 0); g.fill();
+  g.globalCompositeOperation = 'source-over';
+  ctx.save(); ctx.setTransform(1, 0, 0, 1, 0, 0); ctx.drawImage(smokeLayer, 0, 0); ctx.restore();
 }
 function drawConsumableRings(ctx, st) {
   if (st.dead || st.ghost) return;
@@ -903,7 +918,7 @@ function v3Build() {
   const water = new THREE.Mesh(new THREE.PlaneGeometry(size * 6, size * 6),
     new THREE.MeshStandardMaterial({ color: 0x14406a, roughness: .55, metalness: .15, transparent: true, opacity: .72 }));
   // see-through water drawn after the hulls, so dived submarines show beneath it; things that
-  // don't write depth (smoke, zone discs, ghost hulls) use renderOrder 2 to draw after the water
+  // don't write depth (zone discs, ghost hulls) use renderOrder 2, smoke 3-4, to draw after the water
   water.renderOrder = 1;
   water.rotation.x = -Math.PI / 2; water.position.copy(V3.center); scene.add(water);
   if (D.map && D.map.terrain) scene.add(v3Terrain(D.map.terrain));
@@ -933,6 +948,9 @@ function v3Build() {
   V3.planePts = v3Dyn(THREE.Points, 400, new THREE.PointsMaterial({ size: 7, vertexColors: true, sizeAttenuation: false }));
   V3.hitPts = v3Dyn(THREE.Points, 2000, new THREE.PointsMaterial({ size: 5, vertexColors: true, sizeAttenuation: false }));
   V3.smokeGeo = new THREE.CylinderGeometry(1, 1, 1, 24);
+  // smoke as one cloud: every puff first writes depth only (renderOrder 3), then the colour pass (4) passes the
+  // depth test only on the nearest puff surface, so overlapping puffs blend once instead of stacking up
+  V3.smokeDepthMat = new THREE.MeshBasicMaterial({ colorWrite: false, transparent: true });
   V3.smokeMat = new THREE.MeshStandardMaterial({ color: 0xd5dbe3, transparent: true, opacity: .42, depthWrite: false, roughness: 1 });
   V3.smokePool = [];
   V3.ringGeo = new THREE.RingGeometry(.993, 1, 160);
@@ -1367,7 +1385,12 @@ function v3Events() {
       if (!pts) continue;
       for (let i = 0; i < pts.length; i += 2, n++) {
         let m = V3.smokePool[n];
-        if (!m) { m = V3.smokePool[n] = new THREE.Mesh(V3.smokeGeo, V3.smokeMat); m.renderOrder = 2; V3.scene.add(m); }
+        if (!m) {
+          m = V3.smokePool[n] = new THREE.Group();
+          const d = new THREE.Mesh(V3.smokeGeo, V3.smokeDepthMat), c = new THREE.Mesh(V3.smokeGeo, V3.smokeMat);
+          d.renderOrder = 3; c.renderOrder = 4;
+          m.add(d, c); V3.scene.add(m);
+        }
         m.visible = true; m.position.set(pts[i], 2.5, -pts[i + 1]); m.scale.set(sm.radius, 5, sm.radius);
       }
     }
