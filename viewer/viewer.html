@@ -32,6 +32,9 @@
   #maphint { position: absolute; left: 10px; bottom: 10px; background: rgba(11, 18, 32, .75); border: 1px solid var(--line);
     border-radius: 6px; padding: 5px 8px; font-size: 11px; color: var(--muted); pointer-events: none; }
   #maphint b { color: var(--text); }
+  #xhair { position: absolute; left: 50%; top: 50%; transform: translate(-50%, -50%); pointer-events: none; text-align: center;
+    color: #f1f5f9; font: 600 12px system-ui; text-shadow: 0 0 3px #000, 0 0 2px #000; }
+  #xhair svg { display: block; margin: 0 auto 4px; filter: drop-shadow(0 0 1.5px #000); }
   #heatkey { position: absolute; right: 10px; bottom: 10px; background: rgba(11, 18, 32, .8); border: 1px solid var(--line);
     border-radius: 6px; padding: 5px 8px; font-size: 11px; color: var(--muted); pointer-events: none; }
   #heatkey i { display: block; width: 150px; height: 8px; border-radius: 2px; margin: 3px 0 2px;
@@ -122,6 +125,7 @@
     <div id="flyhint" hidden></div>
     <div id="maphint" hidden></div>
     <div id="heatkey" hidden></div>
+    <div id="xhair" hidden><svg width="120" height="40" viewBox="-60 -20 120 40" fill="none" stroke="#f1f5f9" stroke-width="1.5"><path d="M-56 0H-12M12 0H56M0 -6V-16M0 6V16M-40 -4V4M-24 -3V3M24 -3V3M40 -4V4"/><circle r="2.2" fill="#f1f5f9" stroke="none"/></svg><span id="xrange"></span></div>
     <div id="hud"></div>
     <div id="card"></div>
     <div id="drop"><div class="box">
@@ -193,7 +197,7 @@ const esc = s => String(s).replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;',
 // ------------------------------------------------------------------ state
 let D, ships, byId, deathOf, t = 0, playing = false, lastFrame = 0, mapImg = null;
 const opts = { names: true, trails: true, shells: true, torps: true, planes: true, hits: true, smoke: true, consumables: true,
-               fires: true, floods: true, camera: true, ghosts: true, card: true };
+               fires: true, floods: true, camera: true, ghosts: true, card: true, aim: true };
 
 function load(data) {
   D = data;
@@ -485,6 +489,7 @@ function draw2D() {
   drawLock(ctx, states);
   if (opts.consumables) states.forEach(st => st && drawConsumableRings(ctx, st));
   states.forEach(st => st && drawShip(ctx, st));
+  if (opts.aim) drawAim(ctx);
   if (opts.camera) drawCamera(ctx);
 }
 
@@ -872,6 +877,33 @@ function drawTorpedoes(ctx) {
   ctx.globalAlpha = 1;
 }
 
+// gun aim of a ship: Vehicle.targetLocalPos low byte = world bearing (256 steps), high byte = range in
+// D.meta.aimRangeStep map units; a map unit is 30 m (ships firing at their full GameParams range: ~30 m / unit)
+const M_PER_UNIT = 30;
+function aimPoint(s, st) {
+  const row = D.aim && valAt(D.aim[s.id], t, null);
+  if (!row || !st) return null;
+  const v = row[1], bearing = ((v & 255) + .5) / 256 * 2 * Math.PI + Math.PI;
+  const range = ((v >> 8) + .5) * (D.meta.aimRangeStep || 5.92);
+  return { x: st.x + range * Math.sin(bearing), z: st.z + range * Math.cos(bearing), range };
+}
+const kmText = units => `${(units * M_PER_UNIT / 1000).toFixed(1)} km`;
+function aimShip() { return byId[selectedId] || ships.find(x => x.relation === 'self'); }
+function drawAim(ctx) {   // where the selected ship's guns point: dashed line + crosshair + range
+  const s = aimShip(), st = s && shipState(s);
+  if (!st || st.dead || st.ghost) return;
+  const a = aimPoint(s, st);
+  if (!a) return;
+  const X0 = sx(st.x), Y0 = sy(st.z), X = sx(a.x), Y = sy(a.z), col = colorOf(s);
+  ctx.save(); ctx.strokeStyle = col; ctx.globalAlpha = .55; ctx.lineWidth = 1; ctx.setLineDash([3, 4]);
+  ctx.beginPath(); ctx.moveTo(X0, Y0); ctx.lineTo(X, Y); ctx.stroke(); ctx.setLineDash([]);
+  ctx.globalAlpha = .95; ctx.lineWidth = 1.5; ctx.beginPath(); ctx.arc(X, Y, 6, 0, Math.PI * 2);
+  for (const [dx, dy] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) { ctx.moveTo(X + dx * 4, Y + dy * 4); ctx.lineTo(X + dx * 10, Y + dy * 10); }
+  ctx.stroke();
+  ctx.font = '600 10px system-ui'; ctx.fillStyle = col; ctx.textAlign = 'left'; ctx.textBaseline = 'middle';
+  ctx.fillText(kmText(a.range), X + 12, Y);
+  ctx.restore();
+}
 function drawCamera(ctx) {
   const c = valAt(D.camera, t, null);
   if (!c || t - c[0] > 2) return;
@@ -1156,6 +1188,18 @@ function v3Build() {
   V3.torpPts = v3Dyn(THREE.Points, 400, new THREE.PointsMaterial({ size: 4, vertexColors: true, sizeAttenuation: false }));
   V3.torpWakes = v3Dyn(THREE.LineSegments, 4000, new THREE.LineBasicMaterial({ vertexColors: true, transparent: true, opacity: .6 }));
   V3.camLine = v3Dyn(THREE.LineSegments, 16, new THREE.LineBasicMaterial({ vertexColors: true }));
+  {   // aim marker on the water: ring + cross, coloured per ship each frame
+    // drawn over everything (no depth test): the aim point is often on an island edge or behind a ship
+    const mat = new THREE.MeshBasicMaterial({ side: THREE.DoubleSide, transparent: true, opacity: .9, depthWrite: false, depthTest: false });
+    const g = new THREE.Group(), ring = new THREE.Mesh(new THREE.RingGeometry(4.2, 5, 40), mat);
+    ring.rotation.x = -Math.PI / 2; g.add(ring);
+    for (const r of [0, Math.PI / 2]) {
+      const bar = new THREE.Mesh(new THREE.PlaneGeometry(14, .7), mat);
+      bar.rotation.set(-Math.PI / 2, 0, r); g.add(bar);
+    }
+    g.visible = false; g.renderOrder = 5; g.children.forEach(m => { m.renderOrder = 5; });
+    V3.aimMark = g; V3.aimMat = mat; scene.add(g);
+  }
   // battle events: shell endings / explosions as points, smoke puffs as translucent cylinders
   V3.planePts = v3Dyn(THREE.Points, 400, new THREE.PointsMaterial({ size: 7, vertexColors: true, sizeAttenuation: false }));
   V3.hitPts = v3Dyn(THREE.Points, 2000, new THREE.PointsMaterial({ size: 5, vertexColors: true, sizeAttenuation: false }));
@@ -1446,7 +1490,26 @@ function v3Label(el, x, y, z) {
   return true;
 }
 
+function v3Aim() {   // aim marker for the selected ship + the Player-camera crosshair with its range
+  const s = aimShip(), st = s && shipState(s), a = opts.aim && st && !st.dead && !st.ghost ? aimPoint(s, st) : null;
+  V3.aimMark.visible = !!a;
+  if (a) { V3.aimMark.position.set(a.x, .6, -a.z); V3.aimMat.color.set(colorOf(s)); }
+  const xh = document.getElementById('xhair'), c = valAt(D.camera, t, null);
+  const on = V3.mode === 'player' && c && t - c[0] < 2;
+  xh.hidden = !on;
+  if (on) {   // where the screen centre meets the water, measured from own ship
+    const me = ships.find(x => x.relation === 'self'), ms = me && shipState(me);
+    const [, cx, cy, cz, dx, dy, dz] = c;
+    let txt = '—';
+    if (dy < -1e-4 && ms) {
+      const k = -cy / dy, hx = cx + dx * k, hz = cz + dz * k;
+      txt = kmText(Math.hypot(hx - ms.x, hz - ms.z));
+    }
+    document.getElementById('xrange').textContent = txt;
+  }
+}
 function v3Update() {
+  v3Aim();
   const scale = V3.mode === 'player' ? 1 : V3.scale;
   for (const s of ships) {
     const o = V3.ships[s.id], st = shipState(s);
@@ -1730,6 +1793,7 @@ function setMode3D(on) {
   map.hidden = on;
   for (const el of [document.getElementById('gl'), document.getElementById('labels'), cam3d, scale3d]) el.hidden = !on;
   heatSel.hidden = on; heatWin.hidden = on || heatSel.value === 'off';
+  if (!on) document.getElementById('xhair').hidden = true;
   flyHint(); mapHint();
   modeBtn.textContent = on ? '2D' : '3D';
   if (on) { if (!V3.built) v3Build(); requestAnimationFrame(v3Loop); }
