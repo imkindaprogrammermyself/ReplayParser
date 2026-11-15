@@ -28,6 +28,31 @@ def load_class_icons():
     return out
 
 
+PLANE_ICONS = os.path.join(GUI, 'battle_hud', 'markers_minimap', 'plane')
+
+
+def load_plane_icons(planes):
+    """Tag each squadron with its minimap icon (data/aircraft.json) and embed those icons, per side."""
+    try:
+        with open(os.path.join(os.path.dirname(__file__), 'data', 'aircraft.json'), encoding='utf-8') as f:
+            kinds = json.load(f)
+    except FileNotFoundError:
+        return {}
+    out = {}
+    for sq in planes:
+        icon = kinds.get(str(sq.get('params')))
+        if not icon:
+            continue
+        for side in ('ally', 'enemy', 'own'):
+            p = os.path.join(PLANE_ICONS, *f'{icon}_{side}.png'.split('/'))
+            if f'{icon}_{side}' not in out and os.path.isfile(p):
+                with open(p, 'rb') as f:
+                    out[f'{icon}_{side}'] = 'data:image/png;base64,' + base64.b64encode(f.read()).decode()
+        if f'{icon}_ally' in out:
+            sq['icon'] = icon
+    return out
+
+
 def load_icons(ships):
     """The game's side icons per ship type (gui/ship_icons/<PXXX123>.png, + ship_dead_icons), as data URIs."""
     out = {}
@@ -88,6 +113,7 @@ def main(argv=None):
     data['models'] = {} if args.no_map else load_models(data['ships'])
     data['icons'] = {} if args.no_map else load_icons(data['ships'])
     data['classIcons'] = {} if args.no_map else load_class_icons()
+    data['planeIcons'] = {} if args.no_map else load_plane_icons(data['planes'])
     if data['map'] and data['map']['minimapBounds']:
         data['meta']['bounds'] = data['map']['minimapBounds']   # show the whole map, like the game's minimap
     payload = json.dumps(data, separators=(',', ':'), ensure_ascii=False)

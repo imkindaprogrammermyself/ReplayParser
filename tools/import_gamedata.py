@@ -5,7 +5,8 @@
 Writes wowsreplay/data/<version>/:
   scripts/        entities.xml + entity_defs, straight from the client
   ships.json      every Ship in content/GameParams.data, with hull size, main gun range, concealment
-and wowsreplay/data/drops.json (all versions): Drop id -> name / map marker (Arms Race buff zones).
+and wowsreplay/data/drops.json (all versions): Drop id -> name / map marker (Arms Race buff zones),
+    wowsreplay/data/aircraft.json (all versions): Aircraft id -> minimap plane icon.
   constants.json  copied from --constants-from (the arena-state key maps and death reasons are not in
                   these files; they come from replays_unpack, so check a replay of this version decodes)
 
@@ -130,6 +131,39 @@ def drop_entries(root):
     return out
 
 
+def aircraft_entries(root):
+    """GameParams Aircraft id -> its minimap icon, gui/battle_hud/markers_minimap/plane/<icon>_<ally|enemy|own>.png.
+
+    planeSubtype 'consumable' = catapult / patrol fighters and spotters, 'airsupport' = airstrikes, none = squadrons
+    a player flies (carriers, hybrids); the bomb's projectile gives HE / AP, depth charges, mines, deep-water torps."""
+    out = {}
+    for key, o in root.items():
+        p = state(o)
+        if not isinstance(p, dict) or (state(p.get('typeinfo')) or {}).get('type') != 'Aircraft':
+            continue
+        sp = (state(p.get('typeinfo')) or {}).get('species')
+        sub = state(p.get('planeSubtype')) or []
+        bomb = state(root.get(p.get('bombName') or '')) or {}
+        bsp = (state(bomb.get('typeinfo')) or {}).get('species') if isinstance(bomb, dict) else None
+        ap = 'ap' if isinstance(bomb, dict) and bomb.get('ammoType') == 'AP' else 'he'
+        if 'consumable' in sub:
+            icon = 'consumables/' + {'Scout': 'scout', 'Fighter': 'fighter'}.get(sp, 'bomber')
+        elif 'airsupport' in sub:
+            icon = 'airsupport/bomber_' + ('depth_charge' if bsp == 'DepthCharge' else 'mine' if bsp and 'Mine' in bsp else 'he')
+        elif sp == 'Fighter':
+            icon = 'controllable/fighter_' + ap
+        elif sp == 'Dive':
+            icon = 'controllable/bomber_' + ap
+        elif sp == 'Bomber':
+            icon = 'controllable/torpedo_' + ('deepwater' if isinstance(bomb, dict) and bomb.get('isDeepWater') else 'regular')
+        elif sp == 'Skip':
+            icon = 'controllable/skip_' + ap
+        else:
+            icon = 'controllable/auxiliary'
+        out[str(p['id'])] = icon
+    return out
+
+
 def main(argv):
     ap = argparse.ArgumentParser()
     ap.add_argument('source', help='wows_gamedata.zip or the unpacked folder')
@@ -169,6 +203,8 @@ def main(argv):
 
     with open(os.path.join(DATA, 'drops.json'), 'w', encoding='utf-8') as f:
         json.dump(drop_entries(root), f, indent=0, sort_keys=True)
+    with open(os.path.join(DATA, 'aircraft.json'), 'w', encoding='utf-8') as f:
+        json.dump(aircraft_entries(root), f, separators=(',', ':'), sort_keys=True)
 
     if a.constants_from:
         shutil.copy(os.path.join(DATA, a.constants_from, 'constants.json'), os.path.join(out, 'constants.json'))

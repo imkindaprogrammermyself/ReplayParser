@@ -650,17 +650,35 @@ function planeState(sq) {
   return { x, z, y: y == null ? 25 : y, hdg: sq._hdg || 0, n: sq.n != null ? Math.max(0, sq.n - lost) : null,
            owner: byId[sq.owner] };
 }
+// squadron icon from the game (sq.icon, embedded per side by python -m wowsreplay), or null
+const PLANE_IMGS = {};
+function planeIcon(sq, owner) {
+  if (!sq.icon || !D.planeIcons) return null;
+  const key = `${sq.icon}_${owner && owner.relation === 'self' ? 'own' : owner && owner.relation === 'enemy' ? 'enemy' : 'ally'}`;
+  if (!(key in PLANE_IMGS)) {
+    const src = D.planeIcons[key];
+    if (!src) { PLANE_IMGS[key] = null; return null; }
+    const img = new Image(); img.onload = () => draw(); img.src = src; PLANE_IMGS[key] = img;
+  }
+  const img = PLANE_IMGS[key];
+  return img && img.complete && img.naturalWidth ? img : null;
+}
 function drawPlanes(ctx) {
   for (const sq of D.planes) {
     const p = planeState(sq);
     if (!p) continue;
     const col = colorOf(p.owner), X = sx(p.x), Y = sy(p.z);
-    ctx.save(); ctx.translate(X, Y); ctx.rotate(p.hdg);
-    ctx.fillStyle = col; ctx.globalAlpha = .9; ctx.beginPath();
-    ctx.moveTo(0, -6); ctx.lineTo(1.5, -1); ctx.lineTo(7, 1); ctx.lineTo(1.5, 1.5); ctx.lineTo(1, 5); ctx.lineTo(3, 6.5);
-    ctx.lineTo(-3, 6.5); ctx.lineTo(-1, 5); ctx.lineTo(-1.5, 1.5); ctx.lineTo(-7, 1); ctx.lineTo(-1.5, -1); ctx.closePath(); ctx.fill();
-    ctx.restore(); ctx.globalAlpha = 1;
-    if (opts.names && p.n != null) { ctx.font = '10px system-ui'; ctx.fillStyle = col; ctx.textAlign = 'left'; ctx.textBaseline = 'middle'; ctx.fillText(p.n, X + 8, Y); }
+    const img = planeIcon(sq, p.owner);
+    if (img) {   // the game's minimap icon: upright, already coloured for the side
+      ctx.drawImage(img, Math.round(X - img.naturalWidth / 2), Math.round(Y - img.naturalHeight / 2));
+    } else {
+      ctx.save(); ctx.translate(X, Y); ctx.rotate(p.hdg);
+      ctx.fillStyle = col; ctx.globalAlpha = .9; ctx.beginPath();
+      ctx.moveTo(0, -6); ctx.lineTo(1.5, -1); ctx.lineTo(7, 1); ctx.lineTo(1.5, 1.5); ctx.lineTo(1, 5); ctx.lineTo(3, 6.5);
+      ctx.lineTo(-3, 6.5); ctx.lineTo(-1, 5); ctx.lineTo(-1.5, 1.5); ctx.lineTo(-7, 1); ctx.lineTo(-1.5, -1); ctx.closePath(); ctx.fill();
+      ctx.restore(); ctx.globalAlpha = 1;
+    }
+    if (opts.names && p.n != null) { ctx.font = '10px system-ui'; ctx.fillStyle = col; ctx.textAlign = 'left'; ctx.textBaseline = 'middle'; ctx.fillText(p.n, X + 10, Y); }
   }
 }
 // submarine depth in metres (buoyancyCurrentWaterline, < 0 = submerged)
