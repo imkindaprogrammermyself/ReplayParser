@@ -21,7 +21,7 @@ background and listed newest battle first; each opens the same page `python -m w
 version that isn't imported is reported, not crashed on (see tools/update.py).
 
 Game files, all in one (game installed on another PC): copy `tools/game_full.bat` and wowsunpack.exe (ModSDK) there,
-run `game_full.bat "C:\path	o\World_of_Warships"` (needs ~10 GB free), bring back `wows_full.zip`, then
+run `game_full.bat "C:\path\to\World_of_Warships"` (needs ~10 GB free), bring back `wows_full.zip`, then
 `python tools/update.py import wows_full.zip` - every map, ship model and icon, once per game patch
 (regenerate the .bat with `python tools/update.py full`).
 
