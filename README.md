@@ -49,6 +49,26 @@ Aim ('aim' layer): where the selected ship's main battery points (Vehicle.target
 real aim lies in (one 1.4 deg bearing step by one ~178 m range step). Player camera mode in 3D adds the game-style
 crosshair: range from own ship to the ship, land or water under it, held at the guns' reach.
 
+Analysis (bottom bar), from wowsreplay/analytics.py - computed with the timeline, so library pages, `python -m wowsreplay`
+pages and /app all have it:
+- Ship report (any ship; the recording player's is complete, others as far as their client saw): damage dealt / taken
+  by source (main battery, secondaries, torpedoes, aircraft, fire, flooding - each damage event matched to the shell,
+  torpedo or squadron that landed just before it, or the fire / flood running; 1-2 % stays unmatched), who it damaged
+  and was damaged by, accuracy (hits / shells fired: a lower bound, ~30-45 % of landings are never reported) by
+  outcome and by range, reload and gun use, torpedo hits, shells aimed at it, its angle to the shooter for each hit
+  (bow-on ... broadside ... stern-on), time spotted and fire opened unspotted, damage-control delay after a fire,
+  distance to the nearest enemy and to its team.
+- Battle flow: each team's remaining HP over time (turning points = biggest 60 s swings), score, cap control, fights
+  (damage clustered in time and place, both sides), highlights (citadels, torpedo hits, big hits, multi-kills, first
+  blood, last kill - also as timeline marks: "Marks: highlights"), ships sunk and how.
+- Aircraft: squadrons, planes lost and damage per carrier; planes shot down per ship (approximate: the replay doesn't
+  say who shot a plane down, each loss goes to the nearest enemy ship).
+
+Trends (`/trends`, linked from the library): win rate, damage, accuracy, kills and survival across the library's
+replays per player / mode, damage per battle over time, by ship, by map, where you sank on each map, playstyle
+(distance to enemies and team, time spotted, broadside hits, first to sink). Replays processed before analytics
+existed are re-analysed in the background when the page opens.
+
 3D cameras: Orbit, Follow (own or the clicked ship), Player camera (the recorded one) and Fly - WASD move, Q/E down/up,
 drag to look, Shift for x4, mouse wheel sets the flying speed. Fly links: `#t=450&view=3d&cam=fly&pos=x,height,z&look=yaw,pitch`.
 
@@ -77,6 +97,7 @@ Extracted game files and pages built from them contain Wargaming assets: keep th
 | `wowsreplay/container.py`, `packets.py` | replay file (Blowfish + zlib) and packet framing |
 | `wowsreplay/defs.py`, `nested.py`, `safe_pickle.py` | entity definitions, property/method decoding, restricted unpickling |
 | `wowsreplay/timeline.py` | packets -> timeline JSON (tracks, shells, aim, zones, score, ...) |
+| `wowsreplay/analytics.py` | timeline -> ship reports, battle flow, fights, highlights, aircraft, trends line |
 | `wowsreplay/geometry.py`, `assets.py` | `.geometry` (meshoptimizer) and `assets.bin` readers |
 | `viewer/viewer.html` | the page; three.js r158 is inlined at build time |
 | `wowsreplay/server.py` | web app: library, uploads, /assets/, /app + /pybundle/ for in-browser parsing |

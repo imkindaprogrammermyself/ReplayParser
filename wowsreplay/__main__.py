@@ -5,6 +5,7 @@ import json
 import os
 import sys
 
+from .analytics import analyze
 from .timeline import build_timeline
 
 VIEWER = os.path.join(os.path.dirname(__file__), '..', 'viewer', 'viewer.html')
@@ -172,6 +173,9 @@ def build_data(replay_path, embed=True, asset_base=None, progress=None) -> dict:
     and the viewer fetches them (models / terrain only when 3D opens), so the browser caches them across replays.
     progress(stage, fraction): optional callback, see TimelineBuilder.run."""
     data = build_timeline(replay_path, progress)
+    if progress:
+        progress('analytics', 0)
+    data['analytics'] = analyze(data)
     if progress:
         progress('assets', 0)
     lazy = asset_base is not None

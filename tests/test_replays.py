@@ -199,5 +199,38 @@ class ReplayTests(unittest.TestCase):
                 self.assertEqual(d['meta']['aimRangeStep'], AIM_RANGE_STEP)
 
 
+    def test_analytics(self):
+        """Damage sources account for every damage row, almost all matched to a real source; sane per-ship numbers;
+        fights have both sides in them; the flow ends where the battle does."""
+        from wowsreplay.analytics import analyze, SOURCES
+        for r, d in self.each():
+            with self.subTest(replay=os.path.basename(r)):
+                a = analyze(d)
+                own = d['meta']['ownVehicle']
+                rep = a['ships'][str(own)]
+                self.assertEqual(rep['damage']['dealt'], sum(x[3] for x in d['damage'] if x[2] == own and x[1] != own))
+                self.assertEqual(rep['damage']['taken'], sum(x[3] for x in d['damage'] if x[1] == own))
+                total = {k: 0 for k in SOURCES}
+                for v in a['ships'].values():
+                    self.assertLessEqual(set(v['damage']['bySource']), set(SOURCES))
+                    for k, x in v['damage']['bySource'].items():
+                        total[k] += x
+                self.assertLess(total['other'] / sum(total.values()), .05)       # matched to a shell / fire / ...
+                g = rep['main']
+                if g:
+                    self.assertLessEqual(g['hits'], g['tracked'])
+                    self.assertLessEqual(g['tracked'], g['shells'])
+                    self.assertEqual(sum(b[2] for b in g['byRange']), g['shells'])
+                    self.assertEqual(sum(g['kinds'].values()), g['hits'])
+                tk = rep['tank']
+                self.assertEqual(sum(tk['angles']), tk['hits'])
+                self.assertTrue(any(f['dealt']['ally'] and f['dealt']['enemy'] for f in a['fights']))
+                self.assertEqual(a['flow']['t'][-1], round(d['meta']['end'], 1))
+                self.assertTrue(all(0 <= h <= 1 for row in a['flow']['hp'] for h in row))
+                p = a['personal']
+                self.assertEqual((p['dealt'], p['kills']), (rep['damage']['dealt'], rep['kills']))
+                self.assertIn(p['win'], (1, 0, -1, None))
+
+
 if __name__ == '__main__':
     unittest.main()

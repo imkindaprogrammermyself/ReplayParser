@@ -72,6 +72,12 @@ class ServerTests(unittest.TestCase):
 
         st, data = self.req('GET', '/api/replays')
         self.assertEqual([e['id'] for e in json.loads(data)], [rid])
+        stats = json.loads(data)[0]['stats']                        # the Trends page's numbers
+        self.assertTrue(stats['ship'] and stats['dealt'] >= 0 and 'death' in stats)
+        st, page = self.req('GET', '/trends')
+        self.assertEqual(st, 200)
+        self.assertIn(b'Trends', page)
+        self.assertIn(b'"analytics":', self.req('GET', f'/r/{rid}')[1])
 
         st, data = self.upload(body)                       # same file again: already there
         self.assertEqual((st, json.loads(data)['status']), (200, 'done'))

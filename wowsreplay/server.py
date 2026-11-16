@@ -218,6 +218,7 @@ class Library:
                 else 'draw' if (res.get('winnerTeamId') or 0) < 0 else 'loss',
                 'processed': time.strftime('%Y-%m-%d %H:%M:%S'), 'seconds': round(time.time() - t0, 1), 'stamp': stamp,
                 'warnings': warnings_for(data),
+                'stats': (data.get('analytics') or {}).get('personal'),   # the Trends page
             }
             with self.lock:
                 self.index[rid] = entry
@@ -269,6 +270,15 @@ class Library:
             if out['status'] == 'done' and rid in self.index:
                 out['meta'] = self.index[rid]
             return out
+
+    def fill_stats(self):
+        """Rebuild, in the background, replays processed before battle analytics (no 'stats' for the Trends page)."""
+        with self.lock:
+            todo = [rid for rid, e in self.index.items() if 'stats' not in e and os.path.isfile(self.path('replays', rid))
+                    and self.jobs.get(rid, {}).get('status') not in ('queued', 'processing', 'error')]
+        for rid in todo:
+            self.rebuild(rid)
+        return len(todo)
 
     def listing(self):
         with self.lock:
@@ -348,6 +358,9 @@ class Handler(BaseHTTPRequestHandler):
         path = self.path.split('?', 1)[0]
         if path == '/':
             return self._send(200, INDEX_HTML, 'text/html; charset=utf-8')
+        if path == '/trends':
+            self.library.fill_stats()
+            return self._send(200, TRENDS_HTML, 'text/html; charset=utf-8')
         if path == '/api/replays':
             return self._send(200, self.library.listing())
         m = re.fullmatch(r'/api/jobs/([0-9a-f]{64})', path)
@@ -427,6 +440,7 @@ INDEX_HTML = r'''<!doctype html>
   h1 { font-size: 20px; margin: 0 0 4px; }
   .sub { color: var(--muted); margin: 0 0 18px; }
   .sub a { color: var(--accent); }
+  .h1link { font-size: 13px; font-weight: 500; color: var(--accent); margin-left: 10px; text-decoration: none; }
   #drop { display: block; border: 2px dashed var(--line); border-radius: 10px; padding: 28px 16px; text-align: center; background: var(--panel);
           cursor: pointer; transition: border-color .15s, background .15s; }
   #drop.over { border-color: var(--accent); background: var(--panel-2); }
@@ -460,7 +474,7 @@ INDEX_HTML = r'''<!doctype html>
   td.acts button[data-act=delete]:hover { border-color: var(--loss); color: var(--loss); }
 </style></head>
 <body><main>
-  <h1>Replay Library</h1>
+  <h1>Replay Library <a class="h1link" href="/trends">Trends</a></h1>
   <p class="sub">Drop World of Warships replays to turn them into the 2D / 3D viewer. Processed replays stay listed below.
     Or <a href="/app">open one in your browser only</a>: parsed on your machine, not uploaded or listed.</p>
   <label id="drop"><input type="file" id="file" accept=".wowsreplay" multiple>
@@ -553,6 +567,199 @@ for (const ev of ['dragenter', 'dragover']) drop.addEventListener(ev, e => { e.p
 for (const ev of ['dragleave', 'drop']) drop.addEventListener(ev, e => { e.preventDefault(); drop.classList.remove('over'); });
 drop.addEventListener('drop', e => [...e.dataTransfer.files].forEach(upload));
 loadList();
+</script></body></html>
+'''
+
+TRENDS_HTML = r'''<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Replay Trends</title>
+<style>
+  :root { --bg: #0b1220; --panel: #111a2e; --panel-2: #1a2540; --line: #24314f; --text: #dbe4f3; --muted: #8394b4;
+          --accent: #60a5fa; --win: #4ade80; --loss: #f87171; --draw: #94a3b8; }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--text); font: 14px/1.45 system-ui, sans-serif; }
+  main { max-width: 1100px; margin: 0 auto; padding: 24px 16px 48px; }
+  h1 { font-size: 20px; margin: 0 0 4px; } h1 a { font-size: 13px; font-weight: 500; color: var(--accent); margin-left: 10px; text-decoration: none; }
+  h2 { font-size: 15px; margin: 26px 0 8px; display: flex; gap: 12px; align-items: baseline; flex-wrap: wrap; }
+  .sub, .note, .muted { color: var(--muted); } .sub { margin: 0 0 14px; } .note { font-size: 12px; margin-top: 6px; }
+  .bar { display: flex; gap: 10px; flex-wrap: wrap; align-items: center; margin-bottom: 12px; }
+  select { background: var(--panel); color: var(--text); border: 1px solid var(--line); border-radius: 6px; padding: 5px 8px; font: inherit; }
+  .tiles { display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 8px; }
+  .tile { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 8px 12px; }
+  .tile .l, .tile .s { color: var(--muted); font-size: 12px; } .tile .v { font-size: 22px; font-weight: 600; }
+  .panel { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 10px 12px; position: relative; }
+  .table { overflow-x: auto; border: 1px solid var(--line); border-radius: 8px; }
+  table { width: 100%; border-collapse: collapse; }
+  th, td { text-align: right; padding: 6px 10px; border-bottom: 1px solid var(--line); white-space: nowrap; }
+  th:first-child, td:first-child { text-align: left; }
+  th { color: var(--muted); font-weight: 600; font-size: 12px; background: var(--panel); }
+  tr:last-child td { border-bottom: none; }
+  .legend { display: flex; flex-wrap: wrap; gap: 4px 14px; color: var(--muted); font-size: 12px; font-weight: 400; }
+  .legend b { display: inline-block; width: 10px; height: 10px; border-radius: 50%; margin-right: 5px; vertical-align: -1px; }
+  .legend b.ln { border-radius: 1px; height: 3px; width: 14px; vertical-align: 3px; }
+  svg { width: 100%; height: auto; display: block; }
+  svg .grid { stroke: var(--line); } svg .ax { fill: var(--muted); font-size: 11px; }
+  svg circle { cursor: pointer; stroke: var(--panel); stroke-width: 2; }
+  .tip { position: absolute; background: rgba(11, 18, 32, .96); border: 1px solid var(--line); border-radius: 6px; padding: 5px 9px;
+         font-size: 12px; pointer-events: none; white-space: nowrap; }
+  .two { display: grid; grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); gap: 12px; }
+  .map { position: relative; width: 100%; max-width: 520px; aspect-ratio: 1; background: #0e2238 center / cover; border-radius: 6px; }
+  .map i { position: absolute; width: 10px; height: 10px; margin: -5px 0 0 -5px; border-radius: 50%; background: var(--loss);
+           border: 2px solid #0b1220; cursor: pointer; }
+  .kv { display: grid; grid-template-columns: max-content 1fr; gap: 4px 14px; } .kv span { color: var(--muted); }
+  .empty { padding: 30px; text-align: center; color: var(--muted); }
+</style></head>
+<body><main>
+  <h1>Trends <a href="/">Library</a></h1>
+  <p class="sub">Across the replays in the library, from the recording player's point of view.
+    Accuracy is hits / shells fired (a lower bound: not every landing is reported).</p>
+  <div class="bar"><label>Player <select id="player"></select></label><label>Mode <select id="mode"></select></label>
+    <span id="pending" class="muted"></span></div>
+  <div id="out"><div class="empty">Loading...</div></div>
+</main>
+<script>
+const esc = s => String(s ?? '').replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+const ship = s => String(s || '').replace(/^P[A-Z]{3}\d+_/, '').replace(/_/g, ' ');
+const num = v => Math.round(v || 0).toLocaleString();
+const pct = (a, b) => b ? Math.round(100 * a / b) + '%' : '-';
+const mmss = s => `${Math.floor(s / 60)}:${String(Math.round(s % 60)).padStart(2, '0')}`;
+const when = s => { const m = /(\d+)\.(\d+)\.(\d+) (\S+)/.exec(s || ''); return m ? `${m[3]}-${m[2]}-${m[1]} ${m[4]}` : ''; };
+const avg = (list, f) => { const v = list.map(f).filter(x => x != null && !Number.isNaN(x)); return v.length ? v.reduce((a, b) => a + b, 0) / v.length : null; };
+const cause = c => ({ AP_SHELL: 'AP shell', HE_SHELL: 'HE shell', CS_SHELL: 'SAP shell', BURNING: 'fire', FLOOD: 'flooding' })[c] || String(c || '?').toLowerCase().replace(/_/g, ' ');
+const COL = { 1: 'var(--win)', 0: 'var(--loss)' };
+let all = [], index = null;
+
+async function load() {
+  try { all = await (await fetch('/api/replays')).json(); } catch { all = []; }
+  const missing = all.filter(e => !e.stats).length;
+  document.getElementById('pending').textContent = missing ? `${missing} replay(s) still being analysed - this page updates itself` : '';
+  if (missing) setTimeout(load, 4000);
+  const have = all.filter(e => e.stats);
+  fillSelect('player', have.map(e => e.player), 'All players', true);
+  fillSelect('mode', have.map(e => e.gameType), 'All modes');
+  render();
+}
+function fillSelect(id, values, allLabel, allLast) {
+  const el = document.getElementById(id), keep = el.dataset.set ? el.value : null, counts = {};
+  for (const v of values) if (v) counts[v] = (counts[v] || 0) + 1;
+  const opts = Object.entries(counts).sort((a, b) => b[1] - a[1]);
+  const all = allLabel ? `<option value="">${allLabel} (${values.length})</option>` : '';
+  const list = opts.map(([v, n]) => `<option value="${esc(v)}">${esc(v)} (${n})</option>`).join('');
+  el.innerHTML = allLast ? list + all : all + list;   // players: the most frequent one first (you, usually)
+  if (keep !== null && (keep === '' || counts[keep])) el.value = keep;
+  el.dataset.set = '1';
+}
+document.getElementById('player').onchange = render;
+document.getElementById('mode').onchange = render;
+
+function render() {
+  const player = document.getElementById('player').value, mode = document.getElementById('mode').value;
+  const B = all.filter(e => e.stats && (!player || e.player === player) && (!mode || e.gameType === mode))
+    .sort((a, b) => when(a.dateTime).localeCompare(when(b.dateTime)));
+  const out = document.getElementById('out');
+  if (!B.length) { out.innerHTML = '<div class="empty">No analysed replays yet. Upload some in the <a href="/" style="color:var(--accent)">library</a>.</div>'; return; }
+  const S = B.map(e => e.stats), decided = S.filter(s => s.win === 1 || s.win === 0);
+  const shells = S.reduce((a, s) => a + s.shells, 0), hits = S.reduce((a, s) => a + s.hits, 0);
+  const torps = S.reduce((a, s) => a + s.torps, 0), thits = S.reduce((a, s) => a + s.torpHits, 0);
+  const tile = (l, v, s) => `<div class="tile"><div class="l">${l}</div><div class="v">${v}</div>${s ? `<div class="s">${s}</div>` : ''}</div>`;
+  let h = `<div class="tiles">
+    ${tile('Battles', B.length, `${decided.filter(s => s.win === 1).length} won, ${decided.filter(s => s.win === 0).length} lost`)}
+    ${tile('Win rate', pct(decided.filter(s => s.win === 1).length, decided.length))}
+    ${tile('Average damage', num(avg(S, s => s.dealt)), `taken ${num(avg(S, s => s.taken))}`)}
+    ${tile('Accuracy', pct(hits, shells), `${num(hits)} hits of ${num(shells)} shells`)}
+    ${tile('Kills per battle', (avg(S, s => s.kills) || 0).toFixed(2))}
+    ${tile('Survived', pct(S.filter(s => s.survived).length, S.length))}
+    ${torps ? tile('Torpedo hits', pct(thits, torps), `${thits} of ${torps}`) : ''}
+  </div>`;
+  h += `<h2>Damage per battle <span class="legend"><span><b style="background:var(--win)"></b>win</span><span><b style="background:var(--loss)"></b>loss</span><span><b style="background:var(--draw)"></b>draw / unknown</span><span><b class="ln" style="background:var(--accent)"></b>average of the last 5</span></span></h2>
+    <div class="panel">${damageChart(B)}<div class="tip" hidden></div></div>`;
+  h += `<h2>By ship</h2>${groupTable(B, e => ship(e.stats.ship), 'Ship')}`;
+  h += `<h2>By map</h2>${groupTable(B, e => e.map, 'Map', true)}`;
+  h += `<h2>Where you sank <select id="dmap"></select></h2><div class="two"><div class="map" id="dmapimg"></div><div id="dmapinfo"></div></div>`;
+  h += `<h2>Playstyle</h2><div class="panel">${playstyle(S)}</div>`;
+  out.innerHTML = h;
+  wireChart(out.querySelector('svg.dmg'), B);
+  const maps = [...new Set(B.filter(e => e.stats.death && e.stats.death.x != null).map(e => e.map))];
+  const dm = document.getElementById('dmap');
+  if (!maps.length) {
+    dm.hidden = true;
+    dm.closest('h2').nextElementSibling.outerHTML = '<div class="panel muted">No sinkings with a known position in these battles.</div>';
+    return;
+  }
+  dm.innerHTML = maps.map(m => `<option>${esc(m)}</option>`).join('');
+  dm.onchange = () => deathMap(B, dm.value);
+  deathMap(B, dm.value);
+}
+
+function damageChart(B) {
+  const W = 1000, H = 230, L = 52, R = 12, T = 10, Bm = 26, n = B.length;
+  const max = Math.max(...B.map(e => e.stats.dealt), 1) * 1.08;
+  const X = i => n === 1 ? (L + W - R) / 2 : L + (W - L - R) * i / (n - 1), Y = v => T + (H - T - Bm) * (1 - v / max);
+  let g = '';
+  for (let k = 0; k <= 4; k++) { const v = max * k / 4; g += `<line class="grid" x1="${L}" x2="${W - R}" y1="${Y(v)}" y2="${Y(v)}"/><text class="ax" x="${L - 6}" y="${Y(v) + 4}" text-anchor="end">${v >= 1000 ? Math.round(v / 1000) + 'k' : Math.round(v)}</text>`; }
+  const every = Math.max(1, Math.ceil(n / 8));
+  B.forEach((e, i) => { if (i % every === 0 || i === n - 1) g += `<text class="ax" x="${X(i)}" y="${H - 8}" text-anchor="${n > 1 && i === 0 ? 'start' : n > 1 && i === n - 1 ? 'end' : 'middle'}">${esc(when(e.dateTime).slice(5, 10))}</text>`; });
+  const roll = B.map((_, i) => { const w = B.slice(Math.max(0, i - 4), i + 1); return w.reduce((a, e) => a + e.stats.dealt, 0) / w.length; });
+  const line = n > 1 ? `<polyline fill="none" stroke="var(--accent)" stroke-width="2" points="${roll.map((v, i) => `${X(i).toFixed(1)},${Y(v).toFixed(1)}`).join(' ')}"/>` : '';
+  const dots = B.map((e, i) => `<circle data-i="${i}" cx="${X(i).toFixed(1)}" cy="${Y(e.stats.dealt).toFixed(1)}" r="5" fill="${COL[e.stats.win] || 'var(--draw)'}"/>`).join('');
+  return `<svg class="dmg" viewBox="0 0 ${W} ${H}">${g}${line}${dots}</svg>`;
+}
+function wireChart(svg, B) {
+  const tip = svg.parentNode.querySelector('.tip');
+  svg.querySelectorAll('circle').forEach(c => {
+    const e = B[c.dataset.i], s = e.stats;
+    c.onmouseenter = () => {
+      tip.hidden = false;
+      tip.innerHTML = `<b>${num(s.dealt)}</b> damage · ${s.kills} kills · ${esc(ship(s.ship))} on ${esc(e.map)}<br><span class="muted">${esc(e.dateTime)} · ${s.win === 1 ? 'win' : s.win === 0 ? 'loss' : 'draw'} · click to open</span>`;
+      const r = svg.getBoundingClientRect(), b = c.getBoundingClientRect();
+      tip.style.left = `${Math.min(r.width - 300, Math.max(0, b.left - r.left + 12))}px`; tip.style.top = `${b.top - r.top - 8}px`;
+    };
+    c.onmouseleave = () => { tip.hidden = true; };
+    c.onclick = () => { location.href = '/r/' + e.id; };
+  });
+}
+function groupTable(B, key, label, withDeath) {
+  const groups = {};
+  for (const e of B) (groups[key(e)] = groups[key(e)] || []).push(e);
+  const rows = Object.entries(groups).sort((a, b) => b[1].length - a[1].length).map(([k, list]) => {
+    const S = list.map(e => e.stats), dec = S.filter(s => s.win === 1 || s.win === 0);
+    const sh = S.reduce((a, s) => a + s.shells, 0), hi = S.reduce((a, s) => a + s.hits, 0), dead = S.filter(s => s.death);
+    return `<tr><td>${esc(k)}</td><td>${list.length}</td><td>${pct(dec.filter(s => s.win === 1).length, dec.length)}</td><td>${num(avg(S, s => s.dealt))}</td>
+      <td>${(avg(S, s => s.kills) || 0).toFixed(1)}</td><td>${pct(hi, sh)}</td><td>${pct(S.filter(s => s.survived).length, S.length)}</td>
+      ${withDeath ? `<td>${dead.length ? mmss(avg(dead, s => s.death.t)) : '-'}</td>` : ''}</tr>`;
+  }).join('');
+  return `<div class="table"><table><thead><tr><th>${label}</th><th>Battles</th><th>Win rate</th><th>Avg damage</th><th>Kills</th><th>Accuracy</th><th>Survived</th>${withDeath ? '<th>Avg time sunk</th>' : ''}</tr></thead><tbody>${rows}</tbody></table></div>`;
+}
+async function deathMap(B, map) {
+  const box = document.getElementById('dmapimg'), info = document.getElementById('dmapinfo');
+  if (!map) { box.innerHTML = ''; info.innerHTML = ''; return; }
+  if (!index) { try { index = await (await fetch('/assets/index.json')).json(); } catch { index = { json: {} }; } }
+  const mj = (index.json || {})[`maps/${map}/map.json`], bounds = mj && mj.minimap;
+  const games = B.filter(e => e.map === map), dead = games.filter(e => e.stats.death && e.stats.death.x != null);
+  box.style.backgroundImage = bounds ? `url('/assets/maps/${encodeURIComponent(map)}/minimap.png')` : 'none';
+  box.innerHTML = bounds ? dead.map(e => {
+    const d = e.stats.death, [x0, z0, x1, z1] = bounds;
+    return `<a href="/r/${e.id}" title="${esc(e.dateTime)}: sunk at ${mmss(d.t)} (${esc(cause(d.cause))}), ${esc(ship(e.stats.ship))}"><i style="left:${100 * (d.x - x0) / (x1 - x0)}%;top:${100 * (z1 - d.z) / (z1 - z0)}%"></i></a>`;
+  }).join('') : '<div class="empty">This map is not imported on the server.</div>';
+  const causes = {};
+  for (const e of dead) { const c = cause(e.stats.death.cause); causes[c] = (causes[c] || 0) + 1; }
+  info.innerHTML = `<div class="kv"><span>Battles here</span><div>${games.length}</div><span>Sunk</span><div>${dead.length} (${pct(dead.length, games.length)})</div>
+    <span>Average time sunk</span><div>${dead.length ? mmss(avg(dead, e => e.stats.death.t)) : '-'}</div>
+    <span>Causes</span><div>${Object.entries(causes).sort((a, b) => b[1] - a[1]).map(([c, n]) => `${esc(c)} ${n}`).join(', ') || '-'}</div></div>
+    <div class="note">Each dot is where you sank; hover for when and how, click to open that battle.</div>`;
+}
+function playstyle(S) {
+  const dead = S.filter(s => s.death), f = (v, d = 1, u = '') => v == null ? '-' : v.toFixed(d) + u;
+  return `<div class="kv">
+    <span>Distance to the nearest enemy</span><div>${f(avg(S, s => s.nearestEnemy), 1, ' km')} on average</div>
+    <span>Distance from your team's centre</span><div>${f(avg(S, s => s.teamCentre), 1, ' km')} on average</div>
+    <span>Time spotted</span><div>${f(100 * (avg(S, s => s.spotted) || 0), 0, '%')} of your time alive</div>
+    <span>Hits taken while broadside</span><div>${f(100 * (avg(S, s => s.broadside) || 0), 0, '%')}</div>
+    <span>First of your team to sink</span><div>${pct(dead.filter(s => s.death.order === 1).length, S.length)} of battles</div>
+    <span>Time alive</span><div>${f(100 * (avg(S, s => s.end ? s.alive / s.end : null) || 0), 0, '%')} of the battle on average</div>
+  </div>`;
+}
+load();
 </script></body></html>
 '''
 
