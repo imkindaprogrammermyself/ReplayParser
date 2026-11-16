@@ -107,7 +107,7 @@
     border-radius: 6px; padding: 5px 8px; font-size: 11px; color: var(--muted); pointer-events: none; }
   #heatkey i { display: block; width: 150px; height: 8px; border-radius: 2px; margin: 3px 0 2px;
     background: linear-gradient(90deg, rgba(217, 89, 38, .05), rgba(217, 89, 38, .6) 35%, rgba(245, 154, 91, .8) 70%, rgba(253, 226, 200, .85)); }
-  #heatkey div { display: flex; justify-content: space-between; }
+  #heatkey div { display: flex; justify-content: space-between; gap: 10px; }
   .ship { cursor: pointer; }
   .ship.sel { outline: 1px solid var(--self); outline-offset: -1px; }
   #map { cursor: grab; }
@@ -254,13 +254,22 @@
         <option value="all" selected>Marks: kills + ship</option><option value="kills">Marks: kills</option>
         <option value="sel">Marks: selected ship</option><option value="hl">Marks: highlights</option><option value="none">Marks off</option>
       </select>
-      <select id="heat" title="Heatmap: where ships spent time">
-        <option value="off" selected>Heatmap off</option><option value="all">Heat: all ships</option>
-        <option value="ally">Heat: allies</option><option value="enemy">Heat: enemies</option>
-        <option value="sel">Heat: selected ship</option>
+      <select id="heat" title="Heatmap layer">
+        <option value="off" selected>Heatmap off</option>
+        <optgroup label="Ships"><option value="presence">Heat: time spent</option><option value="control">Heat: map control</option>
+          <option value="spotted">Heat: where spotted</option><option value="threat">Heat: threat (guns in range)</option></optgroup>
+        <optgroup label="Damage"><option value="dealt">Heat: damage dealt from</option><option value="taken">Heat: damage taken</option>
+          <option value="shells">Heat: shell landings</option><option value="hits">Heat: shell hits</option></optgroup>
+        <optgroup label="Torpedoes, aircraft"><option value="torps">Heat: torpedo traffic</option><option value="air">Heat: aircraft</option>
+          <option value="planesdown">Heat: planes shot down</option></optgroup>
+      </select>
+      <select id="heatwho" title="Whose" hidden>
+        <option value="all" selected>All ships</option><option value="ally">Allies</option><option value="enemy">Enemies</option>
+        <option value="sel">Selected ship</option>
       </select>
       <select id="heatwin" title="Heatmap time window" hidden>
-        <option value="0" selected>since start</option><option value="120">last 2 min</option>
+        <option value="0" selected>since start</option><option value="60">last 1 min</option><option value="120">last 2 min</option>
+        <option value="300">last 5 min</option>
       </select>
       <select id="scale3d" title="Ship size (1x = in-game scale)" hidden>
         <option value="1" selected>Ships 1x</option><option value="2">Ships 2x</option><option value="4">Ships 4x</option>
@@ -319,6 +328,7 @@ function load(data) {
   D.torpedoes.sort((a, b) => a[0] - b[0]);
   prepTorpedoes();
   prepEvents();
+  heatReset();
   document.getElementById('drop').classList.remove('show');
   // deep links: #t=450 (moment), &view=3d, &cam=orbit|follow|player|fly, &dist= &pitch= &yaw= (orbit camera),
   // &pos=x,y,z&look=yaw,pitch (fly camera)
@@ -410,8 +420,8 @@ map.addEventListener('pointerdown', e => {
 });
 map.addEventListener('pointermove', e => {
   if (!drag2) {   // hover: time spent under the cursor when the heatmap is on
-    const r = map.getBoundingClientRect(), v = D && heatAt(e.clientX - r.left, e.clientY - r.top);
-    mapHint(v == null ? null : v >= 120 ? `${(v / 60).toFixed(1)} ship-min here` : `${Math.round(v)} ship-s here`);
+    const r = map.getBoundingClientRect();
+    mapHint(D ? heatAt(e.clientX - r.left, e.clientY - r.top) : null);
     return;
   }
   const dx = e.clientX - drag2.x, dy = e.clientY - drag2.y;
@@ -472,50 +482,145 @@ function draw() {
   updateCard();
 }
 
-// heatmap: where ships spent time. Each ship's known position every HEAT_STEP s (alive, fresh track or minimap)
-// is binned into a grid over the map; the grid counts samples from the window start up to t, updated
-// incrementally while playing forward. One hue (orange - the map water is blue), transparent at zero, brighter
-// and lighter with more time; square-root scaled so routes show next to the camping spots.
-const HEAT_STEP = 2, HEAT_N = 100, heatSel = document.getElementById('heat'), heatWin = document.getElementById('heatwin');
-const heat = { built: false, steps: [], nx: 0, nz: 0, grid: null, key: null, k0: 0, k1: -1, canvas: null };
-function heatBuild() {
+// heatmaps: each layer is a list of weighted samples per HEAT_STEP s, binned on a grid over the map; the grid sums the
+// samples in the time window (since the start, or the last few minutes up to t), updated incrementally while playing
+// forward. Ratio layers carry a second weight (w2): map control (+1 ally / -1 enemy over presence), spotted (time
+// spotted over time there), shell landings (hits among them). The threat layer is live instead: for the moment t,
+// how many hostile ships' main guns reach each cell. Sequential layers use one hue (orange - the water is blue),
+// transparent at zero and square-root scaled; diverging ones have a grey middle.
+const HEAT_STEP = 2, HEAT_N = 100, THREAT_SEEN = 30;
+const heatSel = document.getElementById('heat'), heatWin = document.getElementById('heatwin'), heatWho = document.getElementById('heatwho');
+const HEAT_LAYERS = {
+  presence: { label: 'Time spent here', who: 'any', unit: v => secs(v, 'ship') },
+  dealt: { label: 'Damage dealt from here', who: 'any', unit: v => `${num(v)} damage dealt` },
+  taken: { label: 'Damage taken here', who: 'any', unit: v => `${num(v)} damage taken` },
+  threat: { label: 'Hostile main guns in range', who: 'side', live: true },
+  spotted: { label: 'Spotted or hidden here', who: 'own', ratio: true },
+  control: { label: 'Map control', ratio: true },
+  shells: { label: 'Shells landing here', who: 'any', unit: (v, h) => `${num(v)} shell${v === 1 ? '' : 's'}, ${num(h)} on ships` },
+  hits: { label: 'Shell hits on ships', who: 'any', unit: v => `${num(v)} hit${v === 1 ? '' : 's'}` },
+  torps: { label: 'Torpedo traffic', who: 'any', unit: v => secs(v, 'torpedo') },
+  air: { label: 'Aircraft activity', who: 'any', unit: v => secs(v, 'squadron') },
+  planesdown: { label: 'Planes shot down here', who: 'any', unit: v => `${num(v)} plane${v === 1 ? '' : 's'} lost` },
+};
+const secs = (v, what) => { const s = v * HEAT_STEP; return s >= 120 ? `${(s / 60).toFixed(1)} ${what}-min` : `${Math.round(s)} ${what}-s`; };
+const heat = { nx: 0, nz: 0, grid: null, grid2: null, layers: {}, key: null, k0: 0, k1: -1, canvas: null, sm: null, sm2: null };
+function heatReset() { heat.grid = null; heat.layers = {}; heat.key = heat.threatKey = null; heat.sm = heat.sm2 = null; }
+function heatInit() {
   const [x0, z0, x1, z1] = D.meta.bounds;
   heat.nx = HEAT_N; heat.nz = Math.max(1, Math.round(HEAT_N * (z1 - z0) / (x1 - x0)));
-  const cw = (x1 - x0) / heat.nx, ch = (z1 - z0) / heat.nz;
-  for (let k = 0, tt = 0; tt <= D.meta.end; k++, tt += HEAT_STEP) {
-    const cells = [], who = [];
-    ships.forEach((s, si) => {
-      const death = deathOf[s.id];
-      if (death && tt >= death[0]) return;
-      const a = sample(D.tracks[s.id], tt), m = sample(D.minimap[s.id], tt);
-      const p = a && (!m || a[3] >= m[3] - .5) ? a : m;
-      if (!p || tt - p[3] > STALE) return;
-      const cx = Math.floor((p[0] - x0) / cw), cz = Math.floor((z1 - p[1]) / ch);
-      if (cx < 0 || cz < 0 || cx >= heat.nx || cz >= heat.nz) return;
-      cells.push(cz * heat.nx + cx); who.push(si);
-    });
-    heat.steps.push({ cells, who });
-  }
-  heat.grid = new Float32Array(heat.nx * heat.nz);
+  heat.grid = new Float32Array(heat.nx * heat.nz); heat.grid2 = new Float32Array(heat.nx * heat.nz);
   heat.canvas = document.createElement('canvas'); heat.canvas.width = heat.nx; heat.canvas.height = heat.nz;
-  heat.built = true;
 }
-function heatWants(mode) {
-  const sel = byId[selectedId] || ships.find(x => x.relation === 'self');
-  return si => mode === 'all' || (mode === 'sel' ? ships[si] === sel : mode === 'ally' ? ships[si].relation !== 'enemy' : ships[si].relation === 'enemy');
+function heatCell(x, z) {
+  const [x0, z0, x1, z1] = D.meta.bounds;
+  const cx = Math.floor((x - x0) / (x1 - x0) * heat.nx), cz = Math.floor((z1 - z) / (z1 - z0) * heat.nz);
+  return cx < 0 || cz < 0 || cx >= heat.nx || cz >= heat.nz ? -1 : cz * heat.nx + cx;
 }
-function heatUpdate(mode, win) {   // grid = samples in (t - win, t]; incremental when only moving forward
-  if (!heat.built) heatBuild();
-  const want = heatWants(mode), key = `${mode}|${win}|${selectedId}`;
-  const k1 = Math.min(heat.steps.length - 1, Math.floor(t / HEAT_STEP)), k0 = win ? Math.max(0, Math.floor((t - win) / HEAT_STEP) + 1) : 0;
-  const add = (k, d) => { const st = heat.steps[k]; for (let i = 0; i < st.cells.length; i++) if (want(st.who[i])) heat.grid[st.cells[i]] += d; };
+function shipAt(s, tt, maxAge = STALE) {   // best known [x, z, yaw, sampleTime] of a ship at tt (alive), or null
+  const death = deathOf[s.id];
+  if (death && tt > death[0] + .5) return null;
+  const a = sample(D.tracks[s.id], tt), m = sample(D.minimap[s.id], tt);
+  const p = a && (!m || a[3] >= m[3] - .5) ? a : m;
+  return p && tt - p[3] <= maxAge ? p : null;
+}
+function heatSteps(name) {
+  const n = Math.floor(D.meta.end / HEAT_STEP) + 1, steps = Array.from({ length: n }, () => ({ c: [], w: [], w2: [], who: [] }));
+  const put = (tt, x, z, si, w, w2 = 0) => {
+    const k = Math.floor(tt / HEAT_STEP), c = heatCell(x, z);
+    if (k < 0 || k >= n || c < 0) return;
+    const st = steps[k]; st.c.push(c); st.w.push(w); st.w2.push(w2); st.who.push(si);
+  };
+  const idx = new Map(ships.map((s, i) => [s.id, i])), src = (D.analytics && D.analytics.damageSource) || '';
+  const each = fn => { for (let k = 0; k < n; k++) fn(k * HEAT_STEP); };
+  if (name === 'presence' || name === 'control') each(tt => ships.forEach((s, si) => {
+    const p = shipAt(s, tt);
+    if (p) put(tt, p[0], p[1], si, name === 'presence' ? 1 : s.relation === 'enemy' ? -1 : 1, 1);
+  }));
+  if (name === 'spotted') each(tt => ships.forEach((s, si) => {
+    if (s.relation === 'enemy') return;   // visibility flags describe the recording side's own ships
+    const p = shipAt(s, tt);
+    if (p) put(tt, p[0], p[1], si, valAt(D.detected[s.id], tt, [0, 0])[1] ? 1 : 0, 1);
+  }));
+  if (name === 'dealt' || name === 'taken') D.damage.forEach((r, i) => {
+    const [tt, victim, attacker, amount] = r;
+    if (attacker === victim) return;
+    if (name === 'dealt' && (src[i] === 'f' || src[i] === 'w')) return;   // fire / flood ticks: the shooter is elsewhere by then
+    const who = name === 'dealt' ? attacker : victim, s = byId[who], p = s && shipAt(s, tt, 10);
+    if (p) put(tt, p[0], p[1], idx.get(who), amount);
+  });
+  if (name === 'shells' || name === 'hits') for (const r of D.shots) {
+    if (r[7] & 0x8000) continue;   // main battery only
+    const hit = r[12] != null && (r[12] & 0x60) === 0x60;
+    if (name === 'hits' && !hit) continue;
+    // where it ended; without a reported end, where it was aimed (it landed there, give or take dispersion)
+    const [tt, x, z] = r[9] != null ? [r[9], r[10], r[11]] : [r[0] + r[6], r[4], r[5]];
+    put(tt, x, z, idx.has(r[1]) ? idx.get(r[1]) : -1, 1, hit ? 1 : 0);
+  }
+  if (name === 'torps') for (const tp of D.torpedoes)
+    for (let tt = Math.ceil(tp[0] / HEAT_STEP) * HEAT_STEP; tt <= tp._end; tt += HEAT_STEP) {
+      const p = torpPos(tp, tt);
+      if (p) put(tt, p[0], p[1], idx.has(tp[1]) ? idx.get(tp[1]) : -1, 1);
+    }
+  if (name === 'air' || name === 'planesdown') for (const sq of D.planes) {
+    const si = idx.has(sq.owner) ? idx.get(sq.owner) : -1;
+    if (name === 'planesdown') {
+      for (const [tt, c] of sq.losses || []) { const p = sample(sq.track, tt); if (p && c) put(tt, p[0], p[1], si, c); }
+      continue;
+    }
+    const end = sq.end != null ? sq.end : D.meta.end;
+    for (let tt = Math.ceil(sq.start / HEAT_STEP) * HEAT_STEP; tt <= end; tt += HEAT_STEP) {
+      const p = sample(sq.track, tt);
+      if (p && tt - p[3] <= 5) put(tt, p[0], p[1], si, 1);
+    }
+  }
+  return steps;
+}
+function heatWants(who) {
+  const sel = aimShip();
+  return si => who === 'all' || (si >= 0 && (who === 'sel' ? ships[si] === sel :
+    who === 'ally' ? ships[si].relation !== 'enemy' : ships[si].relation === 'enemy'));
+}
+function heatWhoValue() {   // the who select, limited to what the layer supports
+  const L = HEAT_LAYERS[heatSel.value];
+  if (!L || !L.who) return 'all';
+  if (L.who === 'own') return heatWho.value === 'sel' ? 'sel' : 'ally';
+  if (L.who === 'side') return heatWho.value === 'enemy' ? 'enemy' : heatWho.value === 'sel' ? 'sel' : 'ally';
+  return heatWho.value;
+}
+function heatUpdate(layer, who, win) {   // grid = samples in (t - win, t]; incremental when only moving forward
+  const L = heat.layers[layer] || (heat.layers[layer] = heatSteps(layer));
+  const want = heatWants(who), key = `${layer}|${who}|${win}|${selectedId}`;
+  const k1 = Math.min(L.length - 1, Math.floor(t / HEAT_STEP)), k0 = win ? Math.max(0, Math.floor((t - win) / HEAT_STEP) + 1) : 0;
+  const add = (k, d) => {
+    const st = L[k];
+    for (let i = 0; i < st.c.length; i++) if (want(st.who[i])) { heat.grid[st.c[i]] += d * st.w[i]; heat.grid2[st.c[i]] += d * st.w2[i]; }
+  };
   if (key !== heat.key || k1 < heat.k1 || k0 < heat.k0 || k1 - heat.k1 > 400) {
-    heat.grid.fill(0); for (let k = k0; k <= k1; k++) add(k, 1);
+    heat.grid.fill(0); heat.grid2.fill(0);
+    for (let k = k0; k <= k1; k++) add(k, 1);
   } else {
     for (let k = heat.k1 + 1; k <= k1; k++) add(k, 1);
     for (let k = heat.k0; k < k0; k++) add(k, -1);
   }
   heat.key = key; heat.k0 = k0; heat.k1 = k1;
+}
+function threatUpdate(who) {   // per cell: hostile ships (seen in the last THREAT_SEEN s) whose main guns reach it
+  const sel = aimShip(), side = who === 'sel' ? (sel && sel.relation === 'enemy' ? 'enemy' : 'ally') : who;
+  const key = `threat|${side}|${Math.floor(t)}`;
+  if (heat.key === key) return;
+  heat.key = key;
+  const [x0, z0, x1, z1] = D.meta.bounds, cw = (x1 - x0) / heat.nx, ch = (z1 - z0) / heat.nz;
+  const guns = ships.filter(s => (s.relation === 'enemy') !== (side === 'enemy') && s.mainRange)
+    .map(s => ({ p: shipAt(s, t, THREAT_SEEN), r2: (s.mainRange / 30) ** 2 })).filter(g => g.p);
+  heat.grid.fill(0); heat.grid2.fill(0);
+  for (let cz = 0; cz < heat.nz; cz++) for (let cx = 0; cx < heat.nx; cx++) {
+    const x = x0 + (cx + .5) * cw, z = z1 - (cz + .5) * ch;
+    let n = 0;
+    for (const g of guns) { const dx = x - g.p[0], dz = z - g.p[1]; if (dx * dx + dz * dz <= g.r2) n++; }
+    heat.grid[cz * heat.nx + cx] = n;
+  }
+  heat.threat = { n: guns.length, side };
 }
 const HEAT_RAMP = [[217, 89, 38], [245, 154, 91], [253, 226, 200]];   // #d95926 -> #f59a5b -> #fde2c8
 function heatColor(f) {   // f 0..1 -> [r, g, b, a]
@@ -523,32 +628,75 @@ function heatColor(f) {   // f 0..1 -> [r, g, b, a]
   const c = HEAT_RAMP[i].map((v, j) => v + (HEAT_RAMP[i + 1][j] - v) * u);
   return [c[0], c[1], c[2], Math.round(255 * Math.min(.85, .04 + f * .85))];
 }
-function drawHeat(ctx) {
-  const mode = heatSel.value, key = document.getElementById('heatkey');
-  key.hidden = mode === 'off' || V3.active;
-  if (mode === 'off') return;
-  heatUpdate(mode, Number(heatWin.value));
-  const { nx, nz, grid } = heat, sm = new Float32Array(nx * nz);   // 3x3 smoothing
-  let max = 0;
+const hexRgb = h => { h = h.trim(); return [1, 3, 5].map(i => parseInt(h.slice(i, i + 2), 16)); };
+const DIV_MID = [148, 163, 184];   // grey: contested / half the time spotted
+function divColor(v, neg, pos, a) {   // v -1..1 -> neg .. grey .. pos
+  const c = v < 0 ? neg : pos, f = Math.min(1, Math.abs(v));
+  return [...DIV_MID.map((m, j) => m + (c[j] - m) * f), Math.round(255 * a)];
+}
+const SPOT_COLORS = { hidden: '#a78bfa', spotted: '#fb923c' };
+function smooth(src) {   // 3x3, centre-weighted
+  const { nx, nz } = heat, out = new Float32Array(nx * nz);
   for (let z = 0; z < nz; z++) for (let x = 0; x < nx; x++) {
     let v = 0, w = 0;
     for (let dz = -1; dz <= 1; dz++) for (let dx = -1; dx <= 1; dx++) {
       const X = x + dx, Z = z + dz;
       if (X < 0 || Z < 0 || X >= nx || Z >= nz) continue;
       const k = dx || dz ? (dx && dz ? .5 : 1) : 2;
-      v += grid[Z * nx + X] * k; w += k;
+      v += src[Z * nx + X] * k; w += k;
     }
-    sm[z * nx + x] = v / w; if (sm[z * nx + x] > max) max = sm[z * nx + x];
+    out[z * nx + x] = v / w;
   }
-  // top of the scale = 98th percentile of visited cells, so one ship parked all game (a carrier at spawn)
-  // saturates instead of washing everything else out
-  const vis = Array.from(sm).filter(v => v > 0).sort((a, b) => a - b);
-  const top = vis.length ? vis[Math.floor(vis.length * .98)] || max : 0;
-  heat.max = top; heat.sm = sm;
+  return out;
+}
+const pctile = (arr, q) => { const v = Array.from(arr).filter(x => x > 0).sort((a, b) => a - b); return v.length ? v[Math.min(v.length - 1, Math.floor(v.length * q))] : 0; };
+function heatLegend() {   // the layer's options (who / window) and the key in the corner
+  const layer = heatSel.value, L = HEAT_LAYERS[layer], on = layer !== 'off' && !V3.active;
+  heatWin.hidden = !on || !L || L.live;
+  heatWho.hidden = !on || !L || !L.who;
+  if (L && L.who) {   // which choices make sense for this layer
+    for (const o of heatWho.options) o.hidden = L.who === 'own' ? o.value === 'all' || o.value === 'enemy' : L.who === 'side' ? o.value === 'all' : false;
+    if (heatWho.selectedOptions[0] && heatWho.selectedOptions[0].hidden) heatWho.value = L.who === 'any' ? 'all' : 'ally';
+    heatWho.options[1].textContent = L.who === 'side' ? 'Threat to allies' : 'Allies';
+    heatWho.options[2].textContent = L.who === 'side' ? 'Threat to enemies' : 'Enemies';
+    heatWho.options[3].textContent = L.who === 'side' ? 'Threat to selected ship' : 'Selected ship';
+  }
+}
+function drawHeat(ctx) {
+  const layer = heatSel.value, key = document.getElementById('heatkey'), L = HEAT_LAYERS[layer];
+  key.hidden = !L || V3.active;
+  if (!L) return;
+  if (!heat.grid) heatInit();
+  const who = heatWhoValue();
+  if (L.live) threatUpdate(who); else heatUpdate(layer, who, Number(heatWin.value));
+  const { nx, nz } = heat, sm = L.live ? heat.grid : smooth(heat.grid), sm2 = L.ratio ? smooth(heat.grid2) : null;
+  heat.sm = sm; heat.sm2 = sm2;
   const g = heat.canvas.getContext('2d'), img = g.createImageData(nx, nz);
-  for (let i = 0; i < sm.length; i++) {
-    if (sm[i] <= top * 1e-3 || !top) continue;
-    img.data.set(heatColor(Math.sqrt(Math.min(1, sm[i] / top))), i * 4);
+  let legend;
+  if (layer === 'control' || layer === 'spotted') {
+    // presence sets the opacity; the balance (ally - enemy share, or share of time spotted) sets the colour
+    const top2 = pctile(sm2, .98) || 1;
+    const [neg, pos] = layer === 'control' ? [hexRgb(css('--enemy')), hexRgb(css('--ally'))] : [hexRgb(SPOT_COLORS.hidden), hexRgb(SPOT_COLORS.spotted)];
+    for (let i = 0; i < sm.length; i++) {
+      if (sm2[i] <= top2 * 2e-3) continue;
+      const v = layer === 'control' ? sm[i] / sm2[i] : 2 * sm[i] / sm2[i] - 1;
+      img.data.set(divColor(v, neg, pos, .12 + .7 * Math.sqrt(Math.min(1, sm2[i] / top2))), i * 4);
+    }
+    legend = layer === 'control'
+      ? `Map control<i style="background:linear-gradient(90deg, ${css('--enemy')}, rgb(${DIV_MID}), ${css('--ally')})"></i><div><span>enemies</span><span>contested</span><span>allies</span></div>`
+      : `Where ${who === 'sel' ? esc((aimShip() || {}).name || 'it') : 'allies'} got spotted<i style="background:linear-gradient(90deg, ${SPOT_COLORS.hidden}, rgb(${DIV_MID}), ${SPOT_COLORS.spotted})"></i><div><span>hidden</span><span>half</span><span>spotted</span></div>`;
+  } else if (L.live) {
+    const n = Math.max(1, heat.threat.n);
+    for (let i = 0; i < sm.length; i++) if (sm[i] > 0) {   // big areas: lighter, so the map and ships stay readable
+      const c = heatColor(Math.min(1, sm[i] / n)); c[3] = Math.round(c[3] * .55); img.data.set(c, i * 4);
+    }
+    legend = `${heat.threat.side === 'enemy' ? 'Allied' : 'Enemy'} main guns in range<i></i><div><span>1</span><span>${heat.threat.n} ship${heat.threat.n === 1 ? '' : 's'} (seen in the last ${THREAT_SEEN} s)</span></div>`;
+  } else {
+    // top of the scale = 98th percentile of non-empty cells, so one hot spot (a carrier parked at spawn) saturates
+    // instead of washing everything else out
+    const top = pctile(sm, .98);
+    for (let i = 0; i < sm.length; i++) if (top && sm[i] > top * 1e-3) img.data.set(heatColor(Math.sqrt(Math.min(1, sm[i] / top))), i * 4);
+    legend = `${L.label}<i></i><div><span>little</span><span>≥ ${L.unit(top, 0).replace(/, .*/, '')}</span></div>`;
   }
   g.putImageData(img, 0, 0);
   const [x0, z0, x1, z1] = D.meta.bounds;
@@ -556,15 +704,21 @@ function drawHeat(ctx) {
   ctx.filter = `blur(${Math.max(1, (x1 - x0) / nx * view.scale * .8).toFixed(1)}px)`;   // soften the grid cells
   ctx.drawImage(heat.canvas, sx(x0), sy(z1), (x1 - x0) * view.scale, (z1 - z0) * view.scale);
   ctx.restore();
-  const peak = Math.round(top * HEAT_STEP);   // ship-seconds at the top of the scale (smoothed cells)
-  key.innerHTML = `Time spent here<i></i><div><span>little</span><span>≥ ${peak >= 120 ? `${Math.round(peak / 60)} ship-min` : `${peak} ship-s`}</span></div>`;
+  key.innerHTML = legend;
 }
-function heatAt(X, Y) {   // ship-seconds in the cell under a canvas point, or null
-  if (heatSel.value === 'off' || !heat.sm) return null;
-  const [x0, z0, x1, z1] = D.meta.bounds, x = wx(X), z = wz(Y);
-  const cx = Math.floor((x - x0) / (x1 - x0) * heat.nx), cz = Math.floor((z1 - z) / (z1 - z0) * heat.nz);
-  if (cx < 0 || cz < 0 || cx >= heat.nx || cz >= heat.nz) return null;
-  return heat.sm[cz * heat.nx + cx] * HEAT_STEP;
+function heatAt(X, Y) {   // hover text for the cell under a canvas point (the raw cell, about 0.5 km), or null
+  const layer = heatSel.value, L = HEAT_LAYERS[layer];
+  if (!L || !heat.grid || V3.active) return null;
+  const c = heatCell(wx(X), wz(Y));
+  if (c < 0) return null;
+  const v = heat.grid[c], v2 = heat.grid2[c];
+  if (L.live) return `${v} of ${heat.threat.n} ${heat.threat.side === 'enemy' ? 'allied' : 'enemy'} ships can shoot here`;
+  if (layer === 'control') {
+    const a = (v2 + v) / 2, e = (v2 - v) / 2;
+    return v2 ? `allies ${secs(a, 'ship')}, enemies ${secs(e, 'ship')}` : null;
+  }
+  if (layer === 'spotted') return v2 ? `spotted ${Math.round(100 * v / v2)}% of ${secs(v2, 'ship')} here` : null;
+  return v ? L.unit(v, v2) : null;
 }
 
 function draw2D() {
@@ -2401,8 +2555,9 @@ function v3Loop() {
 }
 
 const modeBtn = document.getElementById('mode'), cam3d = document.getElementById('cam3d'), scale3d = document.getElementById('scale3d');
-heatSel.addEventListener('change', () => { heatWin.hidden = heatSel.value === 'off' || V3.active; draw(); });
+heatSel.addEventListener('change', () => { heatLegend(); draw(); });
 heatWin.addEventListener('change', draw);
+heatWho.addEventListener('change', draw);
 // lazy pages (the library server) reference models / terrain by URL: fetched the first time 3D opens, then cached
 // by the browser across replays
 let _assets3D = null;
@@ -2433,7 +2588,7 @@ async function setMode3D(on) {
   V3.active = on;
   map.hidden = on;
   for (const el of [document.getElementById('gl'), document.getElementById('labels'), cam3d, scale3d]) el.hidden = !on;
-  heatSel.hidden = on; heatWin.hidden = on || heatSel.value === 'off';
+  heatSel.hidden = on; heatLegend();
   if (!on) document.getElementById('xhair').hidden = true;
   flyHint(); mapHint();
   modeBtn.textContent = on ? '2D' : '3D';

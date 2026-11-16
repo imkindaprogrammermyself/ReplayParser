@@ -230,6 +230,8 @@ class ReplayTests(unittest.TestCase):
                 p = a['personal']
                 self.assertEqual((p['dealt'], p['kills']), (rep['damage']['dealt'], rep['kills']))
                 self.assertIn(p['win'], (1, 0, -1, None))
+                self.assertEqual(len(a['damageSource']), len(d['damage']))       # heatmaps index it by damage row
+                self.assertLessEqual(set(a['damageSource']), set('mstafwro'))
 
 
 if __name__ == '__main__':

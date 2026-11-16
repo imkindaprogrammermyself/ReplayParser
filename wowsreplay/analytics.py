@@ -18,6 +18,7 @@ HIT_KINDS = {0x62: 'cit', 0x63: 'pen', 0x64: 'over', 0x61: 'rico', 0x60: 'shatte
 RANGE_BINS = [0, 4, 8, 12, 16, 20]                    # km
 ANGLE_BINS = [('bow-on', 30), ('angled fore', 60), ('broadside', 120), ('angled aft', 150), ('stern-on', 181)]
 SOURCES = ['main', 'secondary', 'torpedo', 'aircraft', 'fire', 'flood', 'ram', 'other']
+SOURCE_CODES = {'main': 'm', 'secondary': 's', 'torpedo': 't', 'aircraft': 'a', 'fire': 'f', 'flood': 'w', 'ram': 'r', 'other': 'o'}
 
 
 class Series:
@@ -107,7 +108,9 @@ class _Analysis:
         self.attribute_damage()
         reports = {vid: self.ship_report(vid) for vid in self.ships}
         out = {'ships': {str(k): v for k, v in reports.items()}, 'flow': self.flow(), 'fights': self.fight_list(),
-               'highlights': self.highlight_list(), 'aircraft': self.aircraft()}
+               'highlights': self.highlight_list(), 'aircraft': self.aircraft(),
+               # one letter per row of data['damage']: its source (heatmaps leave fire / flood ticks out of 'dealt from')
+               'damageSource': ''.join(SOURCE_CODES[d[4]] for d in self.dmg)}
         out['personal'] = self.personal(out)
         return out
 

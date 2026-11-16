@@ -43,8 +43,14 @@ Page links can jump straight to a moment: `out/my.html#t=450&view=3d&cam=follow&
 roster row) to follow it in both views; Esc goes back to your own ship.
 The ship card (top right; 'card' layer) shows the selected ship's health, speed, fires/floods, active
 consumables, module damage (turrets, torpedoes, secondaries, AA, engine, steering) and damage/hits.
-Heatmap (2D, bottom bar): where all ships / allies / enemies / the selected ship spent time, since the start or
-over the last 2 minutes; hover the map for the time spent under the cursor.
+Heatmaps (2D, bottom bar), for all ships / allies / enemies / the selected ship, since the start or over the last
+1 / 2 / 5 minutes; hover the map for the value under the cursor:
+- time spent; map control (ally minus enemy presence, green / grey / red); where spotted (the selected ship's or the
+  allies' positions, violet = hidden ... orange = spotted); threat (live: how many hostile ships seen in the last 30 s
+  have their main guns in range of each spot);
+- damage dealt from (fire / flood ticks left out) and damage taken; main-battery shell landings (the aim point when the
+  landing wasn't reported) and shell hits on ships;
+- torpedo traffic, aircraft activity, planes shot down.
 Aim ('aim' layer): where the selected ship's main battery points (Vehicle.targetLocalPos), drawn as the patch the
 real aim lies in (one 1.4 deg bearing step by one ~178 m range step). Player camera mode in 3D adds the game-style
 crosshair: range from own ship to the ship, land or water under it, held at the guns' reach.
