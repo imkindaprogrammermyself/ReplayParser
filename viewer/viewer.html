@@ -126,7 +126,31 @@
   #card .fire { color: #fb923c; font-weight: 600; } #card .flood { color: #38bdf8; font-weight: 600; }
   #drop { position: absolute; inset: 0; display: none; place-items: center; text-align: center; color: var(--muted); }
   #drop.show { display: grid; }
-  #drop .box { border: 2px dashed var(--line); border-radius: 10px; padding: 30px 40px; }
+  #drop .box { border: 2px dashed var(--line); border-radius: 10px; padding: 30px 40px; background: var(--panel); }
+  #drop.show { background: rgba(11, 18, 32, .78); z-index: 15; }   /* readable over a battle when the next replay loads */
+  #lprog .track { width: min(340px, 70vw); height: 6px; margin: 14px auto 6px; background: var(--panel-2); border-radius: 3px; overflow: hidden; }
+  #lprog i { display: block; height: 100%; width: 0; background: #60a5fa; border-radius: 3px; transition: width .2s; }
+  #lprog.busy i { background-image: repeating-linear-gradient(45deg, rgba(255,255,255,.22) 0 6px, transparent 6px 12px);
+    background-size: 17px 17px; animation: lstripe .6s linear infinite; }
+  @keyframes lstripe { to { background-position: 17px 0; } }
+  #lstage { font-size: 12px; color: var(--text); min-height: 1.4em; }
+  #logpanel { position: absolute; left: 10px; bottom: 10px; width: min(560px, calc(100% - 20px)); max-height: 46%; z-index: 20;
+    display: flex; flex-direction: column; background: rgba(11, 18, 32, .95); border: 1px solid var(--line); border-radius: 8px;
+    font: 12px/1.45 ui-monospace, SFMono-Regular, Consolas, monospace; }
+  #logpanel[hidden] { display: none; }
+  #logpanel .head { display: flex; gap: 10px; align-items: baseline; padding: 6px 8px 6px 10px; border-bottom: 1px solid var(--line);
+    font-family: system-ui, sans-serif; }
+  #lsum { flex: 1; color: var(--muted); font-size: 11px; }
+  #lclose { padding: 0 7px; line-height: 1.4; }
+  #llog { list-style: none; margin: 0; padding: 4px 0; overflow: auto; }
+  #llog li { display: grid; grid-template-columns: 52px minmax(0, 1fr) auto; gap: 8px; padding: 1px 10px; }
+  #llog .t { color: var(--muted); text-align: right; }
+  #llog .n { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  #llog .m { color: var(--muted); white-space: nowrap; }
+  #llog .step .n, #llog .drop .n { color: #93c5fd; }
+  #llog .file .n { padding-left: 12px; color: var(--text); }
+  #llog .done .n { color: var(--ally); } #llog .err .n { color: var(--enemy); white-space: normal; }
+  #logbtn.on { border-color: #60a5fa; }
   .ally { color: var(--ally); } .enemy { color: var(--enemy); } .self { color: var(--self); }
   @media (max-width: 860px) {
     #app { grid-template-columns: 1fr; grid-template-rows: 60vh auto auto; height: auto; }
@@ -151,7 +175,10 @@
       <p><b>No replay data embedded.</b></p>
       <p id="droptext">Drop a timeline <code>.json</code> here, or <input type="file" id="file" accept=".json"></p>
       <p class="sub">Make one with <code>python -m wowsreplay REPLAY --json out.json</code></p>
+      <div id="lprog" hidden><div class="track"><i></i></div><div id="lstage"></div></div>
     </div></div>
+    <div id="logpanel" hidden><div class="head"><b>Load log</b><span id="lsum"></span><button id="lclose" title="Close">×</button></div>
+      <ol id="llog"></ol></div>
   </div>
   <aside id="side"></aside>
   <div id="bar">
@@ -163,6 +190,7 @@
       </select>
       <button id="mode" title="Switch between 2D minimap and 3D view">3D</button>
       <button id="sumbtn" title="End-of-battle results for every player">Summary</button>
+      <button id="logbtn" title="What this page loaded: files, sizes, times, and the parse steps" hidden>Log</button>
       <select id="cam3d" title="3D camera" hidden>
         <option value="orbit">Orbit</option><option value="follow">Follow ship</option>
         <option value="player">Player camera</option><option value="fly">Fly</option>
@@ -2195,54 +2223,167 @@ const dropSub = drop.querySelector('.sub');
 // /app (window.WOWS_LOCAL from the server): a .wowsreplay dropped here is parsed in this browser by the Python parser
 // running in Pyodide (WebAssembly), in a worker so the page stays responsive. The replay is never uploaded; only the
 // parser bundle for its game version and the asset index come from the server, then maps / models / icons by URL.
+// The load log lists every file the page and the worker fetch (Resource Timing), with size, time and where from.
 const LOCAL = window.WOWS_LOCAL || null;
+const logPanel = document.getElementById('logpanel'), logList = document.getElementById('llog');
+const logBtn = document.getElementById('logbtn'), progEl = document.getElementById('lprog');
+const progBar = progEl.querySelector('i'), stageEl = document.getElementById('lstage');
+const nowAbs = () => performance.timeOrigin + performance.now();
+const fmtBytes = n => n >= 1 << 20 ? (n / 1048576).toFixed(1) + ' MB' : n >= 1024 ? Math.round(n / 1024) + ' KB' : n + ' B';
+const loadTotals = { cdn: 0, server: 0, cached: 0, files: 0 };
+
+function showLog(on) { logPanel.hidden = !on; logBtn.classList.toggle('on', on); }
+function logLine(kind, name, meta, at) {
+  const li = document.createElement('li');
+  li.className = kind;
+  for (const [cls, txt] of [['t', '+' + ((at - performance.timeOrigin) / 1000).toFixed(1) + 's'], ['n', name], ['m', meta || '']]) {
+    const sp = document.createElement('span');
+    sp.className = cls; sp.textContent = txt;
+    if (cls === 'n') sp.title = name;
+    li.appendChild(sp);
+  }
+  const follow = logList.scrollTop + logList.clientHeight >= logList.scrollHeight - 4;
+  li.at = at;   // in time order: the worker reports its files late, when it's free again after parsing
+  let next = null;
+  for (let el = logList.lastElementChild; el && el.at > at; el = el.previousElementSibling) next = el;
+  logList.insertBefore(li, next);
+  if (follow) logList.scrollTop = logList.scrollHeight;
+  return li;
+}
+function logSummary() {
+  document.getElementById('lsum').textContent = `${loadTotals.files} files · CDN ${fmtBytes(loadTotals.cdn)} · ` +
+    `server ${fmtBytes(loadTotals.server)}` + (loadTotals.cached ? ` · ${loadTotals.cached} from cache` : '');
+}
+function timingOf(e) {   // a Resource Timing entry (page or worker) -> plain data, times as epoch ms
+  return { url: e.name, start: performance.timeOrigin + e.startTime, end: performance.timeOrigin + e.responseEnd,
+           transfer: e.transferSize, encoded: e.encodedBodySize, decoded: e.decodedBodySize };
+}
+function logFile(f) {
+  if (/^(blob|data):/.test(f.url)) return;
+  const u = new URL(f.url, location.href), same = u.origin === location.origin;
+  let size, where = same ? 'server' : 'CDN';
+  if (f.transfer === 0 && f.decoded > 0) { size = fmtBytes(f.decoded); where = 'browser cache'; loadTotals.cached++; }
+  else if (f.transfer > 0 && f.encoded > f.transfer) { size = fmtBytes(f.decoded); where += ', not modified'; loadTotals.cached++; }
+  else if (!f.transfer && !f.decoded) size = 'size n/a';
+  else {
+    size = fmtBytes(f.encoded || f.transfer) + (f.decoded > f.encoded * 1.2 && f.encoded ? ` (${fmtBytes(f.decoded)} unpacked)` : '');
+    loadTotals[same ? 'server' : 'cdn'] += f.encoded || f.transfer;
+  }
+  loadTotals.files++;
+  const name = same ? u.pathname.replace(/^\/assets\//, '') : u.pathname.split('/').pop() || u.hostname;
+  logLine('file', name, `${size} · ${((f.end - f.start) / 1000).toFixed(2)} s · ${where}`, f.end);
+  logSummary();
+}
 if (LOCAL) {
   drop.querySelector('b').textContent = 'Open a replay';
   document.getElementById('droptext').innerHTML =
     'Drop a <code>.wowsreplay</code> here, or <input type="file" id="file" accept=".wowsreplay,.json">';
   dropSub.textContent = 'It is parsed in your browser - the file is not uploaded.';
+  logBtn.hidden = false;
+  logBtn.addEventListener('click', () => showLog(logPanel.hidden));
+  document.getElementById('lclose').addEventListener('click', () => showLog(false));
+  const nav = performance.getEntriesByType('navigation')[0];
+  if (nav) logFile(timingOf(nav));
+  if (typeof PerformanceObserver !== 'undefined')
+    new PerformanceObserver(list => list.getEntries().forEach(e => logFile(timingOf(e))))
+      .observe({ type: 'resource', buffered: true });
 }
-const PY_WORKER = `
-let py = null; const have = new Set();
-self.onmessage = async ({ data: q }) => {
-  const say = s => postMessage({ status: s });
-  try {
-    if (!py) {
-      say('Loading Python in your browser (first time ~20 MB, cached after that)...');
-      importScripts(q.cfg.pyodide + 'pyodide.js');
-      py = await loadPyodide({ indexURL: q.cfg.pyodide });
-      await py.loadPackage(['numpy', 'pycryptodome']);
-      py.runPython("import sys; sys.path.insert(0, '/home/pyodide/pkg')");
-    }
-    if (!have.has(q.ver)) {
-      say('Fetching the parser for game version ' + q.ver.replace(/_/g, '.') + '...');
-      const r = await fetch(q.origin + q.cfg.bundle + q.ver + '.zip');
-      if (!r.ok) throw new Error(r.status === 404 ? 'this server has no game data for version ' + q.ver.replace(/_/g, '.')
-                                                  : 'parser bundle: HTTP ' + r.status);
-      py.unpackArchive(await r.arrayBuffer(), 'zip', { extractDir: '/home/pyodide/pkg' });
-      have.add(q.ver);
-    }
-    const ix = await fetch(q.origin + q.cfg.assets + 'index.json');
-    if (!ix.ok) throw new Error('asset index: HTTP ' + ix.status);
-    say('Parsing ' + q.name + '...');
-    py.FS.writeFile('/tmp/replay.wowsreplay', new Uint8Array(q.buf));
-    py.globals.set('ASSET_INDEX', await ix.text());
-    py.globals.set('ASSET_BASE', q.cfg.assets);
-    const out = py.runPython(\`
+
+// progress: the worker announces which stages this load needs (Python and the bundle only the first time), then
+// reports each; 'packets' carries the parser's real progress, the others show a busy stripe
+const STAGES = {
+  python: ['Loading Python runtime (Pyodide)', 50], packages: ['Loading pycryptodome (Blowfish)', 6],
+  bundle: ['Fetching the parser for this game version', 3], index: ['Fetching the asset index', 2],
+  decrypt: ['Decrypting + decompressing the replay', 2], defs: ['Reading entity definitions', 2],
+  packets: ['Reading packets', 30], assets: ['Matching maps, models and icons', 1], page: ['Building the view', 4],
+};
+let prog = null;
+function progPlan(plan) {
+  const sum = plan.reduce((a, s) => a + STAGES[s][1], 0);
+  let acc = 0;
+  prog = { at: {}, cur: null, t: 0, li: null, t0: nowAbs() };
+  for (const s of plan) prog.at[s] = [acc / sum, (acc += STAGES[s][1]) / sum];
+}
+function progStageEnd() {
+  if (prog && prog.li) prog.li.lastChild.textContent = ((nowAbs() - prog.t) / 1000).toFixed(2) + ' s';
+}
+function progStage(s, f) {
+  if (!prog || !prog.at[s]) return;
+  if (s !== prog.cur) {
+    progStageEnd();
+    prog.cur = s; prog.t = nowAbs();
+    prog.li = logLine('step', STAGES[s][0], '...', prog.t);
+  }
+  const [a, b] = prog.at[s];
+  progBar.style.width = (100 * (a + (b - a) * f)).toFixed(1) + '%';
+  progEl.classList.toggle('busy', s !== 'packets');
+  stageEl.textContent = STAGES[s][0] + (s === 'packets' ? ` ${Math.round(f * 100)}%` : '') + '...';
+}
+function progDone(data) {
+  progStageEnd();
+  progBar.style.width = '100%';
+  const m = data.meta, secs = (nowAbs() - prog.t0) / 1000;
+  logLine('done', `Ready: ${m.map}, ${data.ships.length} ships, ${data.shots.length} shells, ` +
+    `${Math.floor(m.end / 60)}:${String(Math.round(m.end % 60)).padStart(2, '0')} of battle`, `${secs.toFixed(1)} s in all`, nowAbs());
+  prog = null;
+}
+
+// the worker: plain JS, turned into a Blob URL below
+function pyWorkerMain() {
+  let py = null;
+  const have = new Set();
+  const PY = `
 import json
 import wowsreplay.__main__ as m
 m.FILES = m.IndexFiles(json.loads(ASSET_INDEX))
 try:
-    out = json.dumps(m.build_data('/tmp/replay.wowsreplay', asset_base=ASSET_BASE), separators=(',', ':'), ensure_ascii=False)
+    out = json.dumps(m.build_data('/tmp/replay.wowsreplay', asset_base=ASSET_BASE, progress=PROGRESS),
+                     separators=(',', ':'), ensure_ascii=False)
 finally:
     import os; os.remove('/tmp/replay.wowsreplay')
-out\`);
-    postMessage({ json: out });
-  } catch (e) {
-    const lines = String((e && e.message) || e).trim().split(String.fromCharCode(10));
-    postMessage({ error: lines[lines.length - 1] });
-  }
-};`;
+out`;
+  if (typeof PerformanceObserver !== 'undefined')
+    new PerformanceObserver(list => list.getEntries().forEach(e => postMessage({ file: {
+      url: e.name, start: performance.timeOrigin + e.startTime, end: performance.timeOrigin + e.responseEnd,
+      transfer: e.transferSize, encoded: e.encodedBodySize, decoded: e.decodedBodySize } })))
+      .observe({ type: 'resource', buffered: true });
+  self.onmessage = async ({ data: q }) => {
+    const stage = (s, f) => postMessage({ stage: s, f: f || 0 });
+    const ver = q.ver.split('_').join('.');
+    try {
+      postMessage({ plan: [...(py ? [] : ['python', 'packages']), ...(have.has(q.ver) ? [] : ['bundle']),
+                           'index', 'decrypt', 'defs', 'packets', 'assets', 'page'] });
+      if (!py) {
+        stage('python');
+        importScripts(q.cfg.pyodide + 'pyodide.js');
+        py = await loadPyodide({ indexURL: q.cfg.pyodide });
+        stage('packages');
+        await py.loadPackage(['pycryptodome'], { messageCallback: () => {} });
+        py.runPython("import sys; sys.path.insert(0, '/home/pyodide/pkg')");
+      }
+      if (!have.has(q.ver)) {
+        stage('bundle');
+        const r = await fetch(q.origin + q.cfg.bundle + q.ver + '.zip');
+        if (!r.ok) throw new Error(r.status === 404 ? 'this server has no game data for version ' + ver
+                                                    : 'parser bundle: HTTP ' + r.status);
+        py.unpackArchive(await r.arrayBuffer(), 'zip', { extractDir: '/home/pyodide/pkg' });
+        have.add(q.ver);
+      }
+      stage('index');
+      const ix = await fetch(q.origin + q.cfg.assets + 'index.json');
+      if (!ix.ok) throw new Error('asset index: HTTP ' + ix.status);
+      const index = await ix.text();
+      py.FS.writeFile('/tmp/replay.wowsreplay', new Uint8Array(q.buf));
+      py.globals.set('ASSET_INDEX', index);
+      py.globals.set('ASSET_BASE', q.cfg.assets);
+      py.globals.set('PROGRESS', stage);
+      postMessage({ json: py.runPython(PY) });
+    } catch (e) {
+      const lines = String((e && e.message) || e).trim().split(String.fromCharCode(10));
+      postMessage({ error: lines[lines.length - 1] });
+    }
+  };
+}
 let pyWorker = null, parsing = false;
 function parseInBrowser(file) {
   return file.arrayBuffer().then(buf => new Promise((done, fail) => {
@@ -2254,12 +2395,15 @@ function parseInBrowser(file) {
       ver = String(head.clientVersionFromXml || '').replace(/\s/g, '').split(',').slice(0, 3).join('_');
     } catch { return fail(new Error('not a World of Warships replay')); }
     if (!/^\d+_\d+_\d+$/.test(ver)) return fail(new Error('no game version in the replay header'));
-    if (!pyWorker) pyWorker = new Worker(URL.createObjectURL(new Blob([PY_WORKER], { type: 'text/javascript' })));
+    logLine('step', `Replay header: game version ${ver.split('_').join('.')}`, '', nowAbs());
+    if (!pyWorker) pyWorker = new Worker(URL.createObjectURL(new Blob([`(${pyWorkerMain})()`], { type: 'text/javascript' })));
     pyWorker.onerror = e => fail(new Error(e.message || 'the parser worker failed'));
     pyWorker.onmessage = ({ data: m }) => {
-      if (m.status) dropSub.textContent = m.status;
+      if (m.file) logFile(m.file);
+      else if (m.plan) progPlan(m.plan);
+      else if (m.stage) progStage(m.stage, m.f);
       else if (m.error) fail(new Error(m.error));
-      else done(JSON.parse(m.json));
+      else if (m.json) done(JSON.parse(m.json));
     };
     pyWorker.postMessage({ buf, ver, name: file.name, cfg: LOCAL, origin: location.origin }, [buf]);
   }));
@@ -2267,12 +2411,24 @@ function parseInBrowser(file) {
 function readFile(file) {
   if (parsing) return;
   const local = LOCAL && /\.wowsreplay$/i.test(file.name);
-  if (local) { parsing = true; drop.classList.add('show'); dropSub.textContent = 'Reading ' + file.name + '...'; }
-  (local ? parseInBrowser(file).then(hydrate) : file.text().then(txt => JSON.parse(txt))).then(data => {
+  if (local) {
+    parsing = true;
+    drop.classList.add('show'); showLog(true);
+    progEl.hidden = false; progBar.style.width = '0%'; stageEl.textContent = 'Reading ' + file.name + '...';
+    dropSub.textContent = 'Parsed in your browser - the file is not uploaded.';
+    logLine('drop', file.name, fmtBytes(file.size) + ' · stays on this computer', nowAbs());
+  }
+  const parsed = local
+    ? parseInBrowser(file).then(async data => { progStage('page', 0); return hydrate(data); })
+    : file.text().then(txt => JSON.parse(txt));
+  parsed.then(async data => {
     if (local) document.title = file.name.replace(/\.wowsreplay$/i, '') + ' - replay';
-    return v3Reset().then(() => load(data));
+    await v3Reset();
+    load(data);
+    if (local) progDone(data);
   }).catch(err => {
     dropSub.textContent = `Could not load ${file.name}: ${err.message}`;
+    if (local) { progStageEnd(); prog = null; progEl.hidden = true; logLine('err', 'Failed: ' + err.message, '', nowAbs()); }
   }).finally(() => { parsing = false; });
 }
 drop.addEventListener('change', e => e.target.id === 'file' && e.target.files[0] && readFile(e.target.files[0]));

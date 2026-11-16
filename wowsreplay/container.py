@@ -38,15 +38,20 @@ class Replay:
 
 
 def _decrypt(data: bytes) -> bytes:
-    cipher = Blowfish.new(WOWS_KEY, Blowfish.MODE_ECB)
-    out = bytearray()
-    prev = 0
+    """Blowfish-ECB from byte 8, each plain block XORed with the previous plain block: out[i] = dec[1] ^ ... ^ dec[i].
+    That prefix XOR is done on one big integer (block i = bits 64i..64i+63) in log2(blocks) shift-and-XOR steps,
+    instead of a Python loop per 8-byte block - ~30x faster, which matters in the browser (Pyodide)."""
     end = len(data) - len(data) % 8
-    for i in range(8, end, 8):
-        block = int.from_bytes(cipher.decrypt(data[i:i + 8]), 'little') ^ prev
-        prev = block
-        out += block.to_bytes(8, 'little')
-    return bytes(out)
+    if end <= 8:
+        return b''
+    dec = Blowfish.new(WOWS_KEY, Blowfish.MODE_ECB).decrypt(data[8:end])
+    x = int.from_bytes(dec, 'little')
+    nbits = len(dec) * 8
+    shift = 64
+    while shift < nbits:
+        x ^= x << shift
+        shift *= 2
+    return (x & ((1 << nbits) - 1)).to_bytes(len(dec), 'little')
 
 
 def read_header(path) -> dict:

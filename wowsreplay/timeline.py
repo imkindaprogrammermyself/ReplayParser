@@ -142,7 +142,8 @@ class TimelineBuilder:
 
     # ------------------------------------------------------------ main loop
 
-    def run(self):
+    def run(self, progress=None):
+        """progress(stage, fraction): called ~50 times while reading packets (the in-browser loader's progress bar)."""
         handlers = {
             P.BASE_PLAYER_CREATE: self.on_base_player,
             P.CELL_PLAYER_CREATE: self.on_cell_player,
@@ -159,7 +160,14 @@ class TimelineBuilder:
             P.STEERING: self.on_steering,
         }
         last_t = 0.0
+        total, done, step = len(self.replay.stream) or 1, 0, len(self.replay.stream) // 50 or 1
+        next_report = 0
         for pkt in P.iter_packets(self.replay.stream):
+            if progress:
+                done += 12 + len(pkt.body)
+                if done >= next_report:
+                    progress('packets', done / total)
+                    next_report = done + step
             if pkt.type != P.END_OF_STREAM:
                 last_t = max(last_t, pkt.time)
             handler = handlers.get(pkt.type)
@@ -730,6 +738,11 @@ class TimelineBuilder:
         }
 
 
-def build_timeline(path) -> dict:
+def build_timeline(path, progress=None) -> dict:
+    if progress:
+        progress('decrypt', 0)
     replay = read_replay(path)
-    return TimelineBuilder(replay, version_dir(replay.version)).run()
+    if progress:
+        progress('defs', 0)
+    builder = TimelineBuilder(replay, version_dir(replay.version))
+    return builder.run(progress)

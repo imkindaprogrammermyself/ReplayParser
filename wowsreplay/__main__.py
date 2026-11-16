@@ -165,12 +165,15 @@ def load_map(name, base=None):
     return out
 
 
-def build_data(replay_path, embed=True, asset_base=None) -> dict:
+def build_data(replay_path, embed=True, asset_base=None, progress=None) -> dict:
     """Timeline + the imported map, models and icons this battle needs (embed=False: timeline only).
 
     asset_base (e.g. '/assets/'): a lazy page - files are referenced by URL under that path instead of embedded,
-    and the viewer fetches them (models / terrain only when 3D opens), so the browser caches them across replays."""
-    data = build_timeline(replay_path)
+    and the viewer fetches them (models / terrain only when 3D opens), so the browser caches them across replays.
+    progress(stage, fraction): optional callback, see TimelineBuilder.run."""
+    data = build_timeline(replay_path, progress)
+    if progress:
+        progress('assets', 0)
     lazy = asset_base is not None
     data['map'] = load_map(data['meta']['map'], asset_base) if embed or lazy else None
     data['models'] = load_models(data['ships']) if embed and not lazy else {}

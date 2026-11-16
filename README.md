@@ -27,8 +27,10 @@ In-browser parsing: `http://localhost:8000/app` is the viewer with no battle in 
 the browser parses it itself - the Python parser runs in Pyodide (WebAssembly, from cdn.jsdelivr.net) in a worker -
 so the replay is never uploaded or stored. The server only hands out the parser bundle for the replay's game version
 (`/pybundle/15_10_0.zip`: the parser + entity defs, constants, ships, ~150 KB) and `/assets/index.json` (which maps,
-models and icons it has); the rest loads from /assets/ like a library page. Measured with a fresh browser: 4 s for a
-10-ship battle, 7 s for a 24-ship one, Pyodide download included (cached after). Needs internet access for Pyodide.
+models and icons it has); the rest loads from /assets/ like a library page. First visit: ~6 MB from the CDN
+(Pyodide + pycryptodome, cached after); a 24-ship battle parses in ~3 s. Needs internet access for Pyodide.
+A progress bar follows the parse (real packet progress), and the Log panel (bottom bar) lists every step and every
+file the page and the parser worker fetched - size, time, and whether it came from the CDN, this server or the cache.
 
 Game files, all in one (game installed on another PC): copy `tools/game_full.bat` and wowsunpack.exe (ModSDK) there,
 run `game_full.bat "C:\path\to\World_of_Warships"` (needs ~10 GB free), bring back `wows_full.zip`, then
