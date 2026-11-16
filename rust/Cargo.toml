@@ -1,0 +1,24 @@
+[package]
+name = "wowsreplay"
+version = "0.1.0"
+edition = "2021"
+description = "World of Warships replay parser (timeline + analytics) for the browser (WebAssembly) and a native CLI"
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[[bin]]
+name = "wowsreplay-cli"
+path = "src/main.rs"
+
+[dependencies]
+serde_json = { version = "1", features = ["preserve_order", "float_roundtrip"] }
+blowfish = "0.9"
+cipher = "0.4"
+miniz_oxide = "0.8"
+
+[profile.release]
+opt-level = 3
+lto = true
+codegen-units = 1
+panic = "abort"

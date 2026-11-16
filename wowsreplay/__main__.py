@@ -17,8 +17,7 @@ DATA = os.path.join(os.path.dirname(__file__), 'data')
 
 
 class Files:
-    """Which imported files exist - the disk. In the browser (Pyodide) FILES is an IndexFiles instead: the parser's
-    own data is unpacked there, but maps / models / icons stay on the server and are listed in /assets/index.json."""
+    """Which imported files exist (the disk); a seam for building pages from somewhere else."""
     def isfile(self, p):
         return os.path.isfile(p)
 
@@ -31,33 +30,6 @@ class Files:
     def read_json(self, p):
         with open(p, encoding='utf-8') as f:
             return json.load(f)
-
-
-class IndexFiles(Files):
-    """Real files first, else the server's asset index: {'files': [paths under data/], 'json': {path: content}}."""
-    def __init__(self, index):
-        self.files = set(index.get('files', ()))
-        self.json = index.get('json', {})
-        self.dirs = {}
-        for f in self.files:
-            d, _, name = f.rpartition('/')
-            self.dirs.setdefault(d, []).append(name)
-
-    @staticmethod
-    def rel(p):
-        return os.path.relpath(p, DATA).replace(os.sep, '/')
-
-    def isfile(self, p):
-        return os.path.isfile(p) or self.rel(p) in self.files or self.rel(p) in self.json
-
-    def isdir(self, p):
-        return os.path.isdir(p) or self.rel(p) in self.dirs
-
-    def listdir(self, p):
-        return os.listdir(p) if os.path.isdir(p) else list(self.dirs.get(self.rel(p), ()))
-
-    def read_json(self, p):
-        return super().read_json(p) if os.path.isfile(p) else self.json[self.rel(p)]
 
 
 FILES = Files()

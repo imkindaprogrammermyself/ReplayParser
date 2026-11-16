@@ -17,7 +17,7 @@ from dataclasses import dataclass
 
 try:
     from Cryptodome.Cipher import Blowfish       # pycryptodomex
-except ImportError:                             # pycryptodome - what Pyodide ships (in-browser parsing)
+except ImportError:                             # pycryptodome (the same API under another name)
     from Crypto.Cipher import Blowfish
 
 MAGIC = b'\x12\x32\x34\x11'
@@ -40,7 +40,7 @@ class Replay:
 def _decrypt(data: bytes) -> bytes:
     """Blowfish-ECB from byte 8, each plain block XORed with the previous plain block: out[i] = dec[1] ^ ... ^ dec[i].
     That prefix XOR is done on one big integer (block i = bits 64i..64i+63) in log2(blocks) shift-and-XOR steps,
-    instead of a Python loop per 8-byte block - ~30x faster, which matters in the browser (Pyodide)."""
+    instead of a Python loop per 8-byte block - ~30x faster."""
     end = len(data) - len(data) % 8
     if end <= 8:
         return b''

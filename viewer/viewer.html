@@ -2644,9 +2644,9 @@ window.addEventListener('resize', () => { resize(); draw(); });
 // ------------------------------------------------------------------ loading
 const drop = document.getElementById('drop');
 const dropSub = drop.querySelector('.sub');
-// /app (window.WOWS_LOCAL from the server): a .wowsreplay dropped here is parsed in this browser by the Python parser
-// running in Pyodide (WebAssembly), in a worker so the page stays responsive. The replay is never uploaded; only the
-// parser bundle for its game version and the asset index come from the server, then maps / models / icons by URL.
+// /app (window.WOWS_LOCAL from the server): a .wowsreplay dropped here is parsed in this browser by the Rust parser
+// compiled to WebAssembly, in a worker so the page stays responsive. The replay is never uploaded; only the parser
+// module, the game data for the replay's version and the asset index come from the server, then maps / models / icons.
 // The load log lists every file the page and the worker fetch (Resource Timing), with size, time and where from.
 const LOCAL = window.WOWS_LOCAL || null;
 const logPanel = document.getElementById('logpanel'), logList = document.getElementById('llog');
@@ -2713,11 +2713,11 @@ if (LOCAL) {
       .observe({ type: 'resource', buffered: true });
 }
 
-// progress: the worker announces which stages this load needs (Python and the bundle only the first time), then
+// progress: the worker announces which stages this load needs (the module and game data only the first time), then
 // reports each; 'packets' carries the parser's real progress, the others show a busy stripe
 const STAGES = {
-  python: ['Loading Python runtime (Pyodide)', 50], packages: ['Loading pycryptodome (Blowfish)', 6],
-  bundle: ['Fetching the parser for this game version', 3], index: ['Fetching the asset index', 2],
+  engine: ['Loading the parser (WebAssembly)', 10], bundle: ['Fetching game data for this version', 6],
+  index: ['Fetching the asset index', 3],
   decrypt: ['Decrypting + decompressing the replay', 2], defs: ['Reading entity definitions', 2],
   packets: ['Reading packets', 30], analytics: ['Battle analytics', 3], assets: ['Matching maps, models and icons', 1],
   page: ['Building the view', 4],
@@ -2753,20 +2753,11 @@ function progDone(data) {
   prog = null;
 }
 
-// the worker: plain JS, turned into a Blob URL below
-function pyWorkerMain() {
-  let py = null;
-  const have = new Set();
-  const PY = `
-import json
-import wowsreplay.__main__ as m
-m.FILES = m.IndexFiles(json.loads(ASSET_INDEX))
-try:
-    out = json.dumps(m.build_data('/tmp/replay.wowsreplay', asset_base=ASSET_BASE, progress=PROGRESS),
-                     separators=(',', ':'), ensure_ascii=False)
-finally:
-    import os; os.remove('/tmp/replay.wowsreplay')
-out`;
+// the worker: plain JS, turned into a Blob URL below. It runs the Rust parser compiled to WebAssembly
+// (rust/, tools/build_wasm.py): alloc() + copy the replay and the data bundle in, parse(), read the JSON back.
+function wasmWorkerMain() {
+  let wasm = null;
+  const bundles = {}, STAGE = [null, 'decrypt', 'defs', 'packets', 'analytics', 'assets'];
   if (typeof PerformanceObserver !== 'undefined')
     new PerformanceObserver(list => list.getEntries().forEach(e => postMessage({ file: {
       url: e.name, start: performance.timeOrigin + e.startTime, end: performance.timeOrigin + e.responseEnd,
@@ -2776,40 +2767,49 @@ out`;
     const stage = (s, f) => postMessage({ stage: s, f: f || 0 });
     const ver = q.ver.split('_').join('.');
     try {
-      postMessage({ plan: [...(py ? [] : ['python', 'packages']), ...(have.has(q.ver) ? [] : ['bundle']),
+      postMessage({ plan: [...(wasm ? [] : ['engine']), ...(bundles[q.ver] ? [] : ['bundle']),
                            'index', 'decrypt', 'defs', 'packets', 'analytics', 'assets', 'page'] });
-      if (!py) {
-        stage('python');
-        importScripts(q.cfg.pyodide + 'pyodide.js');
-        py = await loadPyodide({ indexURL: q.cfg.pyodide });
-        stage('packages');
-        await py.loadPackage(['pycryptodome'], { messageCallback: () => {} });
-        py.runPython("import sys; sys.path.insert(0, '/home/pyodide/pkg')");
+      if (!wasm) {
+        stage('engine');
+        const r = await fetch(q.origin + q.cfg.wasm);
+        if (!r.ok) throw new Error('parser module: HTTP ' + r.status);
+        const { instance } = await WebAssembly.instantiate(await r.arrayBuffer(),
+          { env: { progress: (code, f) => { if (STAGE[code]) stage(STAGE[code], f); } } });
+        wasm = instance.exports;
       }
-      if (!have.has(q.ver)) {
+      if (!bundles[q.ver]) {
         stage('bundle');
-        const r = await fetch(q.origin + q.cfg.bundle + q.ver + '.zip');
+        const r = await fetch(q.origin + q.cfg.bundle + q.ver + '.json');
         if (!r.ok) throw new Error(r.status === 404 ? 'this server has no game data for version ' + ver
-                                                    : 'parser bundle: HTTP ' + r.status);
-        py.unpackArchive(await r.arrayBuffer(), 'zip', { extractDir: '/home/pyodide/pkg' });
-        have.add(q.ver);
+                                                    : 'game data: HTTP ' + r.status);
+        bundles[q.ver] = (await r.text()).trim();
       }
       stage('index');
       const ix = await fetch(q.origin + q.cfg.assets + 'index.json');
       if (!ix.ok) throw new Error('asset index: HTTP ' + ix.status);
-      const index = await ix.text();
-      py.FS.writeFile('/tmp/replay.wowsreplay', new Uint8Array(q.buf));
-      py.globals.set('ASSET_INDEX', index);
-      py.globals.set('ASSET_BASE', q.cfg.assets);
-      py.globals.set('PROGRESS', stage);
-      postMessage({ json: py.runPython(PY) });
+      // one JSON object: the version's data + the asset index + where assets are served
+      const bundle = new TextEncoder().encode(bundles[q.ver].slice(0, -1) + ',"index":' + (await ix.text()) +
+                                              ',"assetBase":' + JSON.stringify(q.cfg.assets) + '}');
+      const replay = new Uint8Array(q.buf);
+      const rp = wasm.alloc(replay.length), bp = wasm.alloc(bundle.length);
+      new Uint8Array(wasm.memory.buffer, rp, replay.length).set(replay);   // views after both allocs: memory may grow
+      new Uint8Array(wasm.memory.buffer, bp, bundle.length).set(bundle);
+      let text;
+      try {
+        const out = wasm.parse(rp, replay.length, bp, bundle.length);
+        text = new TextDecoder().decode(new Uint8Array(wasm.memory.buffer, out, wasm.result_len()));
+      } catch (e) {
+        wasm = null;   // a trap leaves the module in an unknown state: load a fresh one next time
+        throw new Error('the parser crashed on this file (' + (e && e.message || e) + ')');
+      }
+      wasm.dealloc(rp, replay.length); wasm.dealloc(bp, bundle.length);
+      postMessage({ json: text });
     } catch (e) {
-      const lines = String((e && e.message) || e).trim().split(String.fromCharCode(10));
-      postMessage({ error: lines[lines.length - 1] });
+      postMessage({ error: String((e && e.message) || e) });
     }
   };
 }
-let pyWorker = null, parsing = false;
+let parserWorker = null, parsing = false;
 function parseInBrowser(file) {
   return file.arrayBuffer().then(buf => new Promise((done, fail) => {
     let ver = '';
@@ -2821,16 +2821,16 @@ function parseInBrowser(file) {
     } catch { return fail(new Error('not a World of Warships replay')); }
     if (!/^\d+_\d+_\d+$/.test(ver)) return fail(new Error('no game version in the replay header'));
     logLine('step', `Replay header: game version ${ver.split('_').join('.')}`, '', nowAbs());
-    if (!pyWorker) pyWorker = new Worker(URL.createObjectURL(new Blob([`(${pyWorkerMain})()`], { type: 'text/javascript' })));
-    pyWorker.onerror = e => fail(new Error(e.message || 'the parser worker failed'));
-    pyWorker.onmessage = ({ data: m }) => {
+    if (!parserWorker) parserWorker = new Worker(URL.createObjectURL(new Blob([`(${wasmWorkerMain})()`], { type: 'text/javascript' })));
+    parserWorker.onerror = e => fail(new Error(e.message || 'the parser worker failed'));
+    parserWorker.onmessage = ({ data: m }) => {
       if (m.file) logFile(m.file);
       else if (m.plan) progPlan(m.plan);
       else if (m.stage) progStage(m.stage, m.f);
       else if (m.error) fail(new Error(m.error));
-      else if (m.json) done(JSON.parse(m.json));
+      else if (m.json) { const r = JSON.parse(m.json); if (r.error) fail(new Error(r.error)); else done(r.ok); }
     };
-    pyWorker.postMessage({ buf, ver, name: file.name, cfg: LOCAL, origin: location.origin }, [buf]);
+    parserWorker.postMessage({ buf, ver, name: file.name, cfg: LOCAL, origin: location.origin }, [buf]);
   }));
 }
 function readFile(file) {

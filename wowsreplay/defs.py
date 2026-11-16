@@ -290,3 +290,43 @@ class Definitions:
                 except (AttributeError, ValueError):
                     header_size = 1
                 methods.append(Method(m.tag, args, header_size))
+
+
+# ---------------------------------------------------------------- export (the Rust / WebAssembly parser)
+
+def type_spec(t):
+    """A DataType as compact JSON: ['n', fmt] number, ['v', n] vector, ['s'] string, ['b'] blob, ['m'] mailbox,
+    ['d', allowNone, [[name, spec], ...]] fixed dict, ['a', spec, fixedLen | None] array, ['u', spec | None] user type."""
+    if isinstance(t, Number):
+        return ['n', t.fmt[1:]]
+    if isinstance(t, Vector):
+        return ['v', t.size // 4]
+    if isinstance(t, String):
+        return ['s']
+    if isinstance(t, Mailbox):
+        return ['m']
+    if isinstance(t, Bytes):
+        return ['b']
+    if isinstance(t, FixedDict):
+        return ['d', int(t.allow_none), [[n, type_spec(ft)] for n, ft in t.fields]]
+    if isinstance(t, Array):
+        return ['a', type_spec(t.item), t.fixed_len]
+    if isinstance(t, UserType):
+        return ['u', None if t.inner is None else type_spec(t.inner)]
+    raise ValueError(f'cannot export {type(t).__name__}')
+
+
+def export(defs: 'Definitions') -> list:
+    """Every entity of entities.xml (wire type index - 1) with its client properties and methods in wire order."""
+    out = []
+    for name in defs.entity_names:
+        try:
+            e = defs.entity(name)
+        except (OSError, ValueError, ET.ParseError):
+            out.append(None)
+            continue
+        out.append({'name': name,
+                    'props': [[p.name, type_spec(p.type)] for p in e.client_props],
+                    'methods': [[m.name, int(bool(m.args) and m.args[0][0] is not None),
+                                 [[a or '', type_spec(t)] for a, t in m.args]] for m in e.client_methods]})
+    return out

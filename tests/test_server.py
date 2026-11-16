@@ -147,21 +147,19 @@ class ServerTests(unittest.TestCase):
             self.assertEqual(self.req('GET', '/assets/' + rel)[0], 200, rel)
         self.assertTrue(all(k.startswith('maps/') and k.endswith('/map.json') for k in index['json']))
 
-        import io
-        import zipfile
         from wowsreplay.container import read_header
         h = read_header(REPLAYS[0])
         ver = '_'.join(h['clientVersionFromXml'].replace(' ', '').split(',')[:3])
-        st, body = self.req('GET', f'/pybundle/{ver}.zip')
+        st, body = self.req('GET', f'/wasm/{ver}.json')                 # the game data the parser needs
         self.assertEqual(st, 200)
-        names = zipfile.ZipFile(io.BytesIO(body)).namelist()
-        self.assertIn('wowsreplay/__main__.py', names)
-        self.assertIn(f'wowsreplay/data/{ver}/scripts/entities.xml', names)
-        self.assertIn(f'wowsreplay/data/{ver}/ships.json', names)
-        self.assertNotIn('wowsreplay/server.py', names)
-        self.assertFalse([n for n in names if '/maps/' in n or '/models/' in n or '/gui/' in n])
+        bundle = json.loads(body)
+        self.assertEqual(bundle['version'], ver)
+        self.assertTrue(bundle['defs'] and bundle['ships'] and bundle['constants'] and bundle['consumables'])
+        self.assertNotIn('model', next(iter(bundle['ships'].values())))   # trimmed to what the parser reads
         self.assertLess(len(body), 2 << 20)
-        for bad in ('/pybundle/1_2_3.zip', '/pybundle/../x.zip', '/pybundle/15_10_0.tar'):
+        st, wasm = self.req('GET', '/static/wowsreplay.wasm')            # the parser itself
+        self.assertEqual((st, wasm[:4]), (200, b'\x00asm'))
+        for bad in ('/wasm/1_2_3.json', '/wasm/../x.json', '/wasm/15_10_0.zip', '/pybundle/15_10_0.zip'):
             self.assertEqual(self.req('GET', bad)[0], 404, bad)
 
     def test_index_page(self):

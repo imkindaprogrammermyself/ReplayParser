@@ -24,13 +24,17 @@ version that isn't imported is reported, not crashed on (see tools/update.py). P
 changes; each library row also has Rebuild and Delete, and lists what its page is missing (map, ship models).
 
 In-browser parsing: `http://localhost:8000/app` is the viewer with no battle in it. Drop a `.wowsreplay` there and
-the browser parses it itself - the Python parser runs in Pyodide (WebAssembly, from cdn.jsdelivr.net) in a worker -
-so the replay is never uploaded or stored. The server only hands out the parser bundle for the replay's game version
-(`/pybundle/15_10_0.zip`: the parser + entity defs, constants, ships, ~150 KB) and `/assets/index.json` (which maps,
-models and icons it has); the rest loads from /assets/ like a library page. First visit: ~6 MB from the CDN
-(Pyodide + pycryptodome, cached after); a 24-ship battle parses in ~3 s. Needs internet access for Pyodide.
-A progress bar follows the parse (real packet progress), and the Log panel (bottom bar) lists every step and every
-file the page and the parser worker fetched - size, time, and whether it came from the CDN, this server or the cache.
+the browser parses it itself with the Rust parser compiled to WebAssembly (`rust/`, run in a worker), so the replay
+is never uploaded or stored. The server hands out the module (`/static/wowsreplay.wasm`, ~270 KB compressed), the
+game data for the replay's version (`/wasm/15_10_0.json`: entity definitions, constants, ships, ~70 KB) and
+`/assets/index.json` (which maps, models and icons it has); the rest loads from /assets/ like a library page. About
+half a second from drop to battle on a first visit, nothing from outside the server. A progress bar follows the
+parse, and the Log panel lists every step and every file fetched (size, time, server or cache).
+
+The Rust parser is a port of the Python one and must match it exactly: `tests/test_rust.py` compares the two
+(timeline, analytics, asset links) on every replay. After changing the parser, change both, then
+`python tools/build_wasm.py` (needs Rust: https://rustup.rs, plus `rustup target add wasm32-unknown-unknown`) - it
+rebuilds the module into viewer/vendor/ and the native CLI the test uses.
 
 Game files, all in one (game installed on another PC): copy `tools/game_full.bat` and wowsunpack.exe (ModSDK) there,
 run `game_full.bat "C:\path\to\World_of_Warships"` (needs ~10 GB free), bring back `wows_full.zip`, then
@@ -106,5 +110,6 @@ Extracted game files and pages built from them contain Wargaming assets: keep th
 | `wowsreplay/analytics.py` | timeline -> ship reports, battle flow, fights, highlights, aircraft, trends line |
 | `wowsreplay/geometry.py`, `assets.py` | `.geometry` (meshoptimizer) and `assets.bin` readers |
 | `viewer/viewer.html` | the page; three.js r158 is inlined at build time |
-| `wowsreplay/server.py` | web app: library, uploads, /assets/, /app + /pybundle/ for in-browser parsing |
+| `wowsreplay/server.py` | web app: library, uploads, /assets/, /trends, /app + /wasm/ for in-browser parsing |
+| `rust/` | the parser + analytics in Rust: WebAssembly for /app, native CLI for the parity test (tools/build_wasm.py) |
 | `tools/update.py` | plan/import game data; `import_*.py` do the individual steps |

@@ -15,7 +15,6 @@ pass --host 0.0.0.0 to share it on your network (there is no login - anyone who 
 import argparse
 import gzip
 import hashlib
-import io
 import json
 import os
 import re
@@ -23,12 +22,12 @@ import sys
 import threading
 import time
 import traceback
-import zipfile
 from concurrent.futures import ThreadPoolExecutor
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import unquote
 
 from .__main__ import DATA, THREE_JS, build_data, render_page
+from .bundle import data_bundle
 from .container import MAGIC
 
 ASSET_BASE = '/assets/'                                   # game data the viewer fetches (cached by the browser)
@@ -36,7 +35,8 @@ THREE_URL = '/static/' + os.path.basename(THREE_JS)
 # only the files a page references: map images / heights, ship models, icons - nothing else under data/
 ASSET_RE = re.compile(r'/assets/((?:maps/[\w.-]+/(?:minimap\.png|terrain\.i16))|(?:models/[\w.-]+\.json)'
                       r'|(?:gui/[\w./-]+\.(?:png|svg)))')
-PYODIDE_URL = 'https://cdn.jsdelivr.net/pyodide/v0.26.4/full/'   # Python 3.12 + pycryptodome, for /app
+WASM_FILE = os.path.join(os.path.dirname(THREE_JS), 'wowsreplay.wasm')   # the Rust parser (tools/build_wasm.py)
+WASM_URL = '/static/wowsreplay.wasm'
 
 
 def _cached(key, build):
@@ -68,36 +68,18 @@ def asset_index():
     return _cached('index', build)
 
 
-def parser_bundle(version):
-    """/pybundle/<version>.zip: the parser package and the data it reads for that game version, for Pyodide."""
-    vdir = os.path.join(DATA, version)
-    if not os.path.isfile(os.path.join(vdir, 'scripts', 'entities.xml')):
+def wasm_bundle(version):
+    """/wasm/<version>.json: what the WebAssembly parser needs for that game version (wowsreplay/bundle.py)."""
+    if data_bundle(version) is None:
         return None
-
-    def build():
-        buf = io.BytesIO()
-        with zipfile.ZipFile(buf, 'w', zipfile.ZIP_DEFLATED) as z:
-            for n in sorted(os.listdir(PKG_DIR)):
-                if n.endswith('.py') and n != 'server.py':
-                    z.write(os.path.join(PKG_DIR, n), f'wowsreplay/{n}')
-            for n in ('consumables.json', 'drops.json', 'aircraft.json'):
-                if os.path.isfile(os.path.join(DATA, n)):
-                    z.write(os.path.join(DATA, n), f'wowsreplay/data/{n}')
-            for d, _sub, names in os.walk(vdir):
-                for n in names:
-                    full = os.path.join(d, n)
-                    rel = os.path.relpath(full, vdir).replace(os.sep, '/')
-                    if rel.startswith('scripts/') or rel in ('constants.json', 'ships.json'):
-                        z.write(full, f'wowsreplay/data/{version}/{rel}')
-        return buf.getvalue()
-    return _cached('bundle:' + version, build)
+    return _cached('bundle:' + version, lambda: json.dumps(data_bundle(version), separators=(',', ':')).encode())
 
 
 def app_page():
     """/app: the viewer with no battle in it; dropping a .wowsreplay parses it in the browser (nothing uploaded)."""
     def build():
         page = render_page(None, three_url=THREE_URL)
-        cfg = json.dumps({'pyodide': PYODIDE_URL, 'bundle': '/pybundle/', 'assets': ASSET_BASE})
+        cfg = json.dumps({'wasm': WASM_URL, 'bundle': '/wasm/', 'assets': ASSET_BASE})
         return page.replace('<head>', f'<head>\n<script>window.WOWS_LOCAL = {cfg};</script>', 1).encode()
     return _cached('app', build)
 
@@ -317,7 +299,7 @@ class Handler(BaseHTTPRequestHandler):
         if isinstance(body, str):
             body = body.encode('utf-8')
         extra = dict(extra or {})
-        if len(body) > 1024 and re.match(r'(text/|application/json|image/svg)', ctype)                 and 'gzip' in self.headers.get('Accept-Encoding', ''):
+        if len(body) > 1024 and re.match(r'(text/|application/json|application/wasm|image/svg)', ctype)                 and 'gzip' in self.headers.get('Accept-Encoding', ''):
             body = gzip.compress(body, 5)
             extra['Content-Encoding'] = 'gzip'
             extra['Vary'] = 'Accept-Encoding'
@@ -380,12 +362,14 @@ class Handler(BaseHTTPRequestHandler):
             return self._send(200, app_page(), 'text/html; charset=utf-8', {'Cache-Control': 'no-cache'})
         if path == '/assets/index.json':
             return self._send(200, asset_index(), 'application/json', {'Cache-Control': 'no-cache'})
-        m = re.fullmatch(r'/pybundle/(\d+_\d+_\d+)\.zip', path)
+        if path == WASM_URL:
+            return self._file(WASM_FILE, 'application/wasm', 'no-cache')
+        m = re.fullmatch(r'/wasm/(\d+_\d+_\d+)\.json', path)
         if m:
-            body = parser_bundle(m.group(1))
+            body = wasm_bundle(m.group(1))
             if body is None:
                 return self._error(404, f'game version {m.group(1)} is not imported on this server')
-            return self._send(200, body, 'application/zip', {'Cache-Control': 'no-cache'})
+            return self._send(200, body, 'application/json', {'Cache-Control': 'no-cache'})
         m = ASSET_RE.fullmatch(path)
         if m and '..' not in m.group(1).split('/'):
             full = os.path.realpath(os.path.join(DATA, *m.group(1).split('/')))
