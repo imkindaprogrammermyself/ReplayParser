@@ -66,6 +66,9 @@ class ServerTests(unittest.TestCase):
         self.assertEqual(st, 200)
         self.assertIn(b'<canvas id="map">', page)
         self.assertNotIn(b'/*__REPLAY_DATA__*/null', page)
+        self.assertIn(b'<script src="/static/three-0.158.0.min.js">', page)   # lazy: files by URL, not inlined
+        self.assertIn(b'"/assets/', page)
+        self.assertLess(len(page), 4 << 20)
 
         st, data = self.req('GET', '/api/replays')
         self.assertEqual([e['id'] for e in json.loads(data)], [rid])
@@ -102,6 +105,25 @@ class ServerTests(unittest.TestCase):
         self.assertEqual(self.req('GET', '/r/../../etc/passwd')[0], 404)
         self.assertEqual(self.req('GET', '/api/jobs/xyz')[0], 404)
         self.assertEqual(self.req('POST', '/api/upload', b'', {'Content-Length': '0'})[0], 413)
+
+    def test_assets(self):
+        """Lazy pages' files: allowlisted, ETag / 304, nothing else under data/ and no path tricks."""
+        models = glob.glob(os.path.join(ROOT, 'wowsreplay', 'data', 'models', '*.json'))
+        if models:
+            url = '/assets/models/' + os.path.basename(models[0])
+            c = http.client.HTTPConnection('127.0.0.1', self.port, timeout=60)
+            c.request('GET', url)
+            r = c.getresponse(); r.read()
+            self.assertEqual(r.status, 200)
+            etag = r.getheader('ETag')
+            c.request('GET', url, headers={'If-None-Match': etag})
+            r = c.getresponse(); r.read()
+            self.assertEqual(r.status, 304)
+            c.close()
+        self.assertEqual(self.req('GET', '/static/three-0.158.0.min.js')[0], 200)
+        for bad in ('/assets/15_10_0/ships.json', '/assets/../README.md', '/assets/models/../../README.md',
+                    '/assets/maps/x/../../../../README.md', '/assets/consumables.json', '/static/../README.md'):
+            self.assertEqual(self.req('GET', bad)[0], 404, bad)
 
     def test_index_page(self):
         st, page = self.req('GET', '/')

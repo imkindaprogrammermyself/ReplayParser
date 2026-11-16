@@ -13,6 +13,7 @@ pass --host 0.0.0.0 to share it on your network (there is no login - anyone who 
   GET  /r/<id>           the viewer page
 """
 import argparse
+import gzip
 import hashlib
 import json
 import os
@@ -25,8 +26,16 @@ from concurrent.futures import ThreadPoolExecutor
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import unquote
 
-from .__main__ import build_data, render_page
+from .__main__ import DATA, THREE_JS, build_data, render_page
 from .container import MAGIC
+
+ASSET_BASE = '/assets/'                                   # game data the viewer fetches (cached by the browser)
+THREE_URL = '/static/' + os.path.basename(THREE_JS)
+# only the files a page references: map images / heights, ship models, icons - nothing else under data/
+ASSET_RE = re.compile(r'/assets/((?:maps/[\w.-]+/(?:minimap\.png|terrain\.i16))|(?:models/[\w.-]+\.json)'
+                      r'|(?:gui/[\w./-]+\.(?:png|svg)))')
+TYPES = {'.png': 'image/png', '.svg': 'image/svg+xml', '.json': 'application/json', '.i16': 'application/octet-stream',
+         '.js': 'text/javascript; charset=utf-8'}
 
 MAX_UPLOAD = 50 << 20                 # real replays are a few MB
 ID_RE = re.compile(r'^[0-9a-f]{64}$')
@@ -125,8 +134,8 @@ class Library:
             self.jobs[rid]['status'] = 'processing'
         t0, stamp = time.time(), data_stamp()
         try:
-            data = build_data(self.path('replays', rid))
-            page = render_page(data)
+            data = build_data(self.path('replays', rid), asset_base=ASSET_BASE)   # files by URL, not embedded
+            page = render_page(data, three_url=THREE_URL)
             tmp = self.path('pages', rid) + '.tmp'
             with open(tmp, 'w', encoding='utf-8') as f:
                 f.write(page)
@@ -202,7 +211,7 @@ def warnings_for(data):
     """What is missing from a built page: the map, ship models, packets the parser skipped."""
     out = [] if data['map'] else ['map not imported: no minimap or terrain']
     types = {s['ship'] for s in data['ships'] if s.get('ship')}
-    missing = sorted(types - set(data['models']))
+    missing = sorted(types - set(data.get('modelUrls') or data['models']))
     if missing:
         out.append(f'{len(missing)} of {len(types)} ship types without a 3D model: {", ".join(missing[:4])}'
                    + (' ...' if len(missing) > 4 else ''))
@@ -229,11 +238,16 @@ class Handler(BaseHTTPRequestHandler):
             body = json.dumps(body, ensure_ascii=False)
         if isinstance(body, str):
             body = body.encode('utf-8')
+        extra = dict(extra or {})
+        if len(body) > 1024 and re.match(r'(text/|application/json|image/svg)', ctype)                 and 'gzip' in self.headers.get('Accept-Encoding', ''):
+            body = gzip.compress(body, 5)
+            extra['Content-Encoding'] = 'gzip'
+            extra['Vary'] = 'Accept-Encoding'
         self.send_response(code)
         self.send_header('Content-Type', ctype)
         self.send_header('Content-Length', str(len(body)))
         self.send_header('X-Content-Type-Options', 'nosniff')
-        for k, v in (extra or {}).items():
+        for k, v in extra.items():
             self.send_header(k, v)
         self.end_headers()
         if self.command != 'HEAD':
@@ -241,6 +255,23 @@ class Handler(BaseHTTPRequestHandler):
 
     def _error(self, code, msg):
         self._send(code, {'error': msg})
+
+    def _file(self, path, ctype, cache='no-cache'):
+        """A file with an ETag: a browser that has it gets 304 (no-cache = always ask, so imports show at once)."""
+        try:
+            st = os.stat(path)
+        except OSError:
+            return self._error(404, 'not found')
+        etag = f'"{st.st_mtime_ns:x}-{st.st_size:x}"'
+        if self.headers.get('If-None-Match') == etag:
+            self.send_response(304)
+            self.send_header('ETag', etag)
+            self.send_header('Cache-Control', cache)
+            self.end_headers()
+            return
+        with open(path, 'rb') as f:
+            body = f.read()
+        self._send(200, body, ctype, {'ETag': etag, 'Cache-Control': cache})
 
     def do_HEAD(self):
         self.do_GET()
@@ -261,8 +292,14 @@ class Handler(BaseHTTPRequestHandler):
             p = self.library.path('pages', m.group(1))
             if not os.path.isfile(p):
                 return self._error(404, 'no page for that replay (yet)')
-            with open(p, 'rb') as f:
-                return self._send(200, f.read(), 'text/html; charset=utf-8', {'Cache-Control': 'private, max-age=3600'})
+            return self._file(p, 'text/html; charset=utf-8', 'private, no-cache')
+        if path == THREE_URL:
+            return self._file(THREE_JS, TYPES['.js'], 'public, max-age=86400')
+        m = ASSET_RE.fullmatch(path)
+        if m and '..' not in m.group(1).split('/'):
+            full = os.path.realpath(os.path.join(DATA, *m.group(1).split('/')))
+            if full.startswith(os.path.realpath(DATA) + os.sep):
+                return self._file(full, TYPES.get(os.path.splitext(full)[1], 'application/octet-stream'))
         self._error(404, 'not found')
 
     def do_DELETE(self):   # DELETE can't come from another site's page without a CORS preflight, which we don't answer

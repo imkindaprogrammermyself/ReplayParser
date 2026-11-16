@@ -17,7 +17,9 @@ python -m wowsreplay.server --host 0.0.0.0  # share on your network - there is n
 ```
 
 Uploads are checked (size <= 50 MB, replay signature), stored by SHA-256 so a re-upload is instant, processed in the
-background and listed newest battle first; each opens the same page `python -m wowsreplay` writes. A replay from a game
+background and listed newest battle first. Library pages carry only the battle's timeline (~1-2 MB compressed);
+the viewer fetches the map, icons and three.js from /assets/ and /static/ (ship models and terrain only when 3D
+opens), and the browser caches them across replays. `python -m wowsreplay` still writes self-contained pages. A replay from a game
 version that isn't imported is reported, not crashed on (see tools/update.py). Pages rebuild themselves when the game data or viewer
 changes; each library row also has Rebuild and Delete, and lists what its page is missing (map, ship models).
 

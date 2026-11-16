@@ -242,8 +242,7 @@ function load(data) {
   const hash = new URLSearchParams(location.hash.slice(1));
   t = hash.has('t') ? Math.min(D.meta.end, Number(hash.get('t')) || 0) : 0;
   buildSide(); resize(); draw();
-  if (hash.get('view') === '3d') {
-    setMode3D(true);
+  if (hash.get('view') === '3d') setMode3D(true).then(() => {
     if (hash.has('cam')) setCamMode(hash.get('cam'));
     for (const k of ['dist', 'pitch', 'yaw']) if (hash.has(k)) orbit[k] = Number(hash.get(k)) || orbit[k];   // &dist=12&pitch=.6&yaw=1
     if (V3.mode === 'fly') {
@@ -251,7 +250,7 @@ function load(data) {
       if (pos.length === 3 && pos.every(Number.isFinite)) fly.pos = { x: pos[0], y: pos[1], z: -pos[2] };   // map x, height, map z
       if (look.length === 2 && look.every(Number.isFinite)) [fly.yaw, fly.pitch] = look;
     }
-  }
+  });
 }
 
 // ------------------------------------------------------------------ map canvas
@@ -1499,7 +1498,7 @@ function v3Build() {
 // Only cells that reach near the surface are meshed; the water plane hides the rest.
 const TERRAIN_STOPS = [[-3, 0x6b6650], [.6, 0xb9a77a], [4, 0x6f8a45], [18, 0x4f6a36], [38, 0x7d776c], [70, 0xdcdcdc]];
 function v3Terrain(T) {
-  const H = new Int16Array(Uint8Array.from(atob(T.data), ch => ch.charCodeAt(0)).buffer);
+  const H = T.buffer ? new Int16Array(T.buffer) : new Int16Array(Uint8Array.from(atob(T.data), ch => ch.charCodeAt(0)).buffer);
   const n = T.n, pos = new Float32Array(n * n * 3), col = new Float32Array(n * n * 3);
   const c = new THREE.Color(), lo = new THREE.Color(), hi = new THREE.Color();
   for (let r = 0; r < n; r++) for (let q = 0; q < n; q++) {
@@ -2106,8 +2105,27 @@ function v3Loop() {
 const modeBtn = document.getElementById('mode'), cam3d = document.getElementById('cam3d'), scale3d = document.getElementById('scale3d');
 heatSel.addEventListener('change', () => { heatWin.hidden = heatSel.value === 'off' || V3.active; draw(); });
 heatWin.addEventListener('change', draw);
-function setMode3D(on) {
+// lazy pages (the library server) reference models / terrain by URL: fetched the first time 3D opens, then cached
+// by the browser across replays
+let _assets3D = null;
+function load3DAssets() {
+  if (!_assets3D) _assets3D = (async () => {
+    const T = D.map && D.map.terrain;
+    const jobs = Object.entries(D.modelUrls || {}).filter(([k]) => !D.models[k]).map(async ([k, url]) => {
+      try { const r = await fetch(url); if (r.ok) D.models[k] = await r.json(); } catch (e) { console.warn('model', k, e); }
+    });
+    if (T && T.url && !T.buffer) jobs.push(fetch(T.url).then(r => r.ok ? r.arrayBuffer() : null).then(b => { T.buffer = b; }).catch(() => {}));
+    await Promise.all(jobs);
+  })();
+  return _assets3D;
+}
+async function setMode3D(on) {
   if (on && (!has3D || !D)) return;
+  if (on && !V3.built && (D.modelUrls || (D.map && D.map.terrain && D.map.terrain.url))) {
+    const hud = document.getElementById('hud');
+    hud.textContent = 'loading 3D models…';
+    await load3DAssets();
+  }
   V3.active = on;
   map.hidden = on;
   for (const el of [document.getElementById('gl'), document.getElementById('labels'), cam3d, scale3d]) el.hidden = !on;
@@ -2173,7 +2191,20 @@ function readFile(file) {
 document.getElementById('file').addEventListener('change', e => e.target.files[0] && readFile(e.target.files[0]));
 document.addEventListener('dragover', e => e.preventDefault());
 document.addEventListener('drop', e => { e.preventDefault(); if (e.dataTransfer.files[0]) readFile(e.dataTransfer.files[0]); });
-if (EMBEDDED) load(EMBEDDED); else drop.classList.add('show');
+// lazy pages: the 2D map's class icons are SVG text to tint - fetch the ones this battle's ship classes use
+async function hydrate(data) {
+  if (data.lazyClassIcons) {
+    const sp = new Set(data.ships.map(s => (s.species || '').toLowerCase()));
+    await Promise.all(Object.entries(data.classIcons).map(async ([name, url]) => {
+      const want = [...sp].some(x => x && name.endsWith('_' + x)) || [...sp].some(x => x && name.includes('_' + x + '_'));
+      if (!want) { delete data.classIcons[name]; return; }
+      try { const r = await fetch(url); data.classIcons[name] = r.ok ? await r.text() : null; } catch { data.classIcons[name] = null; }
+      if (!data.classIcons[name]) delete data.classIcons[name];
+    }));
+  }
+  return data;
+}
+if (EMBEDDED) hydrate(EMBEDDED).then(load); else drop.classList.add('show');
 </script>
 </body>
 </html>
