@@ -15,7 +15,10 @@ import struct
 import zlib
 from dataclasses import dataclass
 
-from Cryptodome.Cipher import Blowfish
+try:
+    from Cryptodome.Cipher import Blowfish       # pycryptodomex
+except ImportError:                             # pycryptodome - what Pyodide ships (in-browser parsing)
+    from Crypto.Cipher import Blowfish
 
 MAGIC = b'\x12\x32\x34\x11'
 WOWS_KEY = bytes.fromhex('29B7C909383F8488FA98EC4E131979FB')

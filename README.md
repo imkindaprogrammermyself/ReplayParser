@@ -23,6 +23,13 @@ opens), and the browser caches them across replays. `python -m wowsreplay` still
 version that isn't imported is reported, not crashed on (see tools/update.py). Pages rebuild themselves when the game data or viewer
 changes; each library row also has Rebuild and Delete, and lists what its page is missing (map, ship models).
 
+In-browser parsing: `http://localhost:8000/app` is the viewer with no battle in it. Drop a `.wowsreplay` there and
+the browser parses it itself - the Python parser runs in Pyodide (WebAssembly, from cdn.jsdelivr.net) in a worker -
+so the replay is never uploaded or stored. The server only hands out the parser bundle for the replay's game version
+(`/pybundle/15_10_0.zip`: the parser + entity defs, constants, ships, ~150 KB) and `/assets/index.json` (which maps,
+models and icons it has); the rest loads from /assets/ like a library page. Measured with a fresh browser: 4 s for a
+10-ship battle, 7 s for a 24-ship one, Pyodide download included (cached after). Needs internet access for Pyodide.
+
 Game files, all in one (game installed on another PC): copy `tools/game_full.bat` and wowsunpack.exe (ModSDK) there,
 run `game_full.bat "C:\path\to\World_of_Warships"` (needs ~10 GB free), bring back `wows_full.zip`, then
 `python tools/update.py import wows_full.zip` - every map, ship model and icon, once per game patch
@@ -70,4 +77,5 @@ Extracted game files and pages built from them contain Wargaming assets: keep th
 | `wowsreplay/timeline.py` | packets -> timeline JSON (tracks, shells, aim, zones, score, ...) |
 | `wowsreplay/geometry.py`, `assets.py` | `.geometry` (meshoptimizer) and `assets.bin` readers |
 | `viewer/viewer.html` | the page; three.js r158 is inlined at build time |
+| `wowsreplay/server.py` | web app: library, uploads, /assets/, /app + /pybundle/ for in-browser parsing |
 | `tools/update.py` | plan/import game data; `import_*.py` do the individual steps |

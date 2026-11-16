@@ -149,7 +149,7 @@
     <div id="card"></div>
     <div id="drop"><div class="box">
       <p><b>No replay data embedded.</b></p>
-      <p>Drop a timeline <code>.json</code> here, or <input type="file" id="file" accept=".json"></p>
+      <p id="droptext">Drop a timeline <code>.json</code> here, or <input type="file" id="file" accept=".json"></p>
       <p class="sub">Make one with <code>python -m wowsreplay REPLAY --json out.json</code></p>
     </div></div>
   </div>
@@ -2046,6 +2046,8 @@ function v3Camera() {
 }
 
 function v3Controls(canvas) {
+  if (canvas.dataset.controls) return;   // once per page, also when a second battle rebuilds the scene
+  canvas.dataset.controls = '1';
   canvas.addEventListener('contextmenu', e => e.preventDefault());
   canvas.addEventListener('pointerdown', e => {
     orbit.drag = { x: e.clientX, y: e.clientY, pan: e.button === 2 || e.shiftKey, x0: e.clientX, y0: e.clientY };
@@ -2108,6 +2110,12 @@ heatWin.addEventListener('change', draw);
 // lazy pages (the library server) reference models / terrain by URL: fetched the first time 3D opens, then cached
 // by the browser across replays
 let _assets3D = null;
+async function v3Reset() {   // another battle opened in this page: the next 3D view is built from scratch
+  if (V3.active) await setMode3D(false);
+  if (V3.built) { V3.renderer.dispose(); V3.built = false; }
+  _assets3D = null;
+  if (D) setPlaying(false);
+}
 function load3DAssets() {
   if (!_assets3D) _assets3D = (async () => {
     const T = D.map && D.map.terrain;
@@ -2183,12 +2191,91 @@ window.addEventListener('resize', () => { resize(); draw(); });
 
 // ------------------------------------------------------------------ loading
 const drop = document.getElementById('drop');
-function readFile(file) {
-  file.text().then(txt => load(JSON.parse(txt))).catch(err => {
-    drop.querySelector('.sub').textContent = `Could not load ${file.name}: ${err.message}`;
-  });
+const dropSub = drop.querySelector('.sub');
+// /app (window.WOWS_LOCAL from the server): a .wowsreplay dropped here is parsed in this browser by the Python parser
+// running in Pyodide (WebAssembly), in a worker so the page stays responsive. The replay is never uploaded; only the
+// parser bundle for its game version and the asset index come from the server, then maps / models / icons by URL.
+const LOCAL = window.WOWS_LOCAL || null;
+if (LOCAL) {
+  drop.querySelector('b').textContent = 'Open a replay';
+  document.getElementById('droptext').innerHTML =
+    'Drop a <code>.wowsreplay</code> here, or <input type="file" id="file" accept=".wowsreplay,.json">';
+  dropSub.textContent = 'It is parsed in your browser - the file is not uploaded.';
 }
-document.getElementById('file').addEventListener('change', e => e.target.files[0] && readFile(e.target.files[0]));
+const PY_WORKER = `
+let py = null; const have = new Set();
+self.onmessage = async ({ data: q }) => {
+  const say = s => postMessage({ status: s });
+  try {
+    if (!py) {
+      say('Loading Python in your browser (first time ~20 MB, cached after that)...');
+      importScripts(q.cfg.pyodide + 'pyodide.js');
+      py = await loadPyodide({ indexURL: q.cfg.pyodide });
+      await py.loadPackage(['numpy', 'pycryptodome']);
+      py.runPython("import sys; sys.path.insert(0, '/home/pyodide/pkg')");
+    }
+    if (!have.has(q.ver)) {
+      say('Fetching the parser for game version ' + q.ver.replace(/_/g, '.') + '...');
+      const r = await fetch(q.origin + q.cfg.bundle + q.ver + '.zip');
+      if (!r.ok) throw new Error(r.status === 404 ? 'this server has no game data for version ' + q.ver.replace(/_/g, '.')
+                                                  : 'parser bundle: HTTP ' + r.status);
+      py.unpackArchive(await r.arrayBuffer(), 'zip', { extractDir: '/home/pyodide/pkg' });
+      have.add(q.ver);
+    }
+    const ix = await fetch(q.origin + q.cfg.assets + 'index.json');
+    if (!ix.ok) throw new Error('asset index: HTTP ' + ix.status);
+    say('Parsing ' + q.name + '...');
+    py.FS.writeFile('/tmp/replay.wowsreplay', new Uint8Array(q.buf));
+    py.globals.set('ASSET_INDEX', await ix.text());
+    py.globals.set('ASSET_BASE', q.cfg.assets);
+    const out = py.runPython(\`
+import json
+import wowsreplay.__main__ as m
+m.FILES = m.IndexFiles(json.loads(ASSET_INDEX))
+try:
+    out = json.dumps(m.build_data('/tmp/replay.wowsreplay', asset_base=ASSET_BASE), separators=(',', ':'), ensure_ascii=False)
+finally:
+    import os; os.remove('/tmp/replay.wowsreplay')
+out\`);
+    postMessage({ json: out });
+  } catch (e) {
+    const lines = String((e && e.message) || e).trim().split(String.fromCharCode(10));
+    postMessage({ error: lines[lines.length - 1] });
+  }
+};`;
+let pyWorker = null, parsing = false;
+function parseInBrowser(file) {
+  return file.arrayBuffer().then(buf => new Promise((done, fail) => {
+    let ver = '';
+    try {   // block 0 of the header (magic, block count, size, JSON) names the game version
+      const v = new DataView(buf);
+      if (v.getUint32(0, true) !== 0x11343212) throw 0;
+      const head = JSON.parse(new TextDecoder().decode(new Uint8Array(buf, 12, v.getUint32(8, true))));
+      ver = String(head.clientVersionFromXml || '').replace(/\s/g, '').split(',').slice(0, 3).join('_');
+    } catch { return fail(new Error('not a World of Warships replay')); }
+    if (!/^\d+_\d+_\d+$/.test(ver)) return fail(new Error('no game version in the replay header'));
+    if (!pyWorker) pyWorker = new Worker(URL.createObjectURL(new Blob([PY_WORKER], { type: 'text/javascript' })));
+    pyWorker.onerror = e => fail(new Error(e.message || 'the parser worker failed'));
+    pyWorker.onmessage = ({ data: m }) => {
+      if (m.status) dropSub.textContent = m.status;
+      else if (m.error) fail(new Error(m.error));
+      else done(JSON.parse(m.json));
+    };
+    pyWorker.postMessage({ buf, ver, name: file.name, cfg: LOCAL, origin: location.origin }, [buf]);
+  }));
+}
+function readFile(file) {
+  if (parsing) return;
+  const local = LOCAL && /\.wowsreplay$/i.test(file.name);
+  if (local) { parsing = true; drop.classList.add('show'); dropSub.textContent = 'Reading ' + file.name + '...'; }
+  (local ? parseInBrowser(file).then(hydrate) : file.text().then(txt => JSON.parse(txt))).then(data => {
+    if (local) document.title = file.name.replace(/\.wowsreplay$/i, '') + ' - replay';
+    return v3Reset().then(() => load(data));
+  }).catch(err => {
+    dropSub.textContent = `Could not load ${file.name}: ${err.message}`;
+  }).finally(() => { parsing = false; });
+}
+drop.addEventListener('change', e => e.target.id === 'file' && e.target.files[0] && readFile(e.target.files[0]));
 document.addEventListener('dragover', e => e.preventDefault());
 document.addEventListener('drop', e => { e.preventDefault(); if (e.dataTransfer.files[0]) readFile(e.dataTransfer.files[0]); });
 // lazy pages: the 2D map's class icons are SVG text to tint - fetch the ones this battle's ship classes use

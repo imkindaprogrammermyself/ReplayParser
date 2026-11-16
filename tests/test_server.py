@@ -125,6 +125,39 @@ class ServerTests(unittest.TestCase):
                     '/assets/maps/x/../../../../README.md', '/assets/consumables.json', '/static/../README.md'):
             self.assertEqual(self.req('GET', bad)[0], 404, bad)
 
+    def test_in_browser(self):
+        """/app parses replays in the browser: the empty viewer, the asset index and a per-version parser bundle."""
+        st, page = self.req('GET', '/app')
+        self.assertEqual(st, 200)
+        self.assertIn(b'window.WOWS_LOCAL', page)
+        self.assertIn(b'const EMBEDDED = null;', page)
+
+        st, data = self.req('GET', '/assets/index.json')
+        self.assertEqual(st, 200)
+        index = json.loads(data)
+        for rel in index['files']:                       # only what /assets/ actually serves
+            self.assertNotIn('..', rel)
+        for rel in index['files'][:3]:
+            self.assertEqual(self.req('GET', '/assets/' + rel)[0], 200, rel)
+        self.assertTrue(all(k.startswith('maps/') and k.endswith('/map.json') for k in index['json']))
+
+        import io
+        import zipfile
+        from wowsreplay.container import read_header
+        h = read_header(REPLAYS[0])
+        ver = '_'.join(h['clientVersionFromXml'].replace(' ', '').split(',')[:3])
+        st, body = self.req('GET', f'/pybundle/{ver}.zip')
+        self.assertEqual(st, 200)
+        names = zipfile.ZipFile(io.BytesIO(body)).namelist()
+        self.assertIn('wowsreplay/__main__.py', names)
+        self.assertIn(f'wowsreplay/data/{ver}/scripts/entities.xml', names)
+        self.assertIn(f'wowsreplay/data/{ver}/ships.json', names)
+        self.assertNotIn('wowsreplay/server.py', names)
+        self.assertFalse([n for n in names if '/maps/' in n or '/models/' in n or '/gui/' in n])
+        self.assertLess(len(body), 2 << 20)
+        for bad in ('/pybundle/1_2_3.zip', '/pybundle/../x.zip', '/pybundle/15_10_0.tar'):
+            self.assertEqual(self.req('GET', bad)[0], 404, bad)
+
     def test_index_page(self):
         st, page = self.req('GET', '/')
         self.assertEqual(st, 200)

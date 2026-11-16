@@ -15,6 +15,7 @@ pass --host 0.0.0.0 to share it on your network (there is no login - anyone who 
 import argparse
 import gzip
 import hashlib
+import io
 import json
 import os
 import re
@@ -22,6 +23,7 @@ import sys
 import threading
 import time
 import traceback
+import zipfile
 from concurrent.futures import ThreadPoolExecutor
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import unquote
@@ -34,6 +36,72 @@ THREE_URL = '/static/' + os.path.basename(THREE_JS)
 # only the files a page references: map images / heights, ship models, icons - nothing else under data/
 ASSET_RE = re.compile(r'/assets/((?:maps/[\w.-]+/(?:minimap\.png|terrain\.i16))|(?:models/[\w.-]+\.json)'
                       r'|(?:gui/[\w./-]+\.(?:png|svg)))')
+PYODIDE_URL = 'https://cdn.jsdelivr.net/pyodide/v0.26.4/full/'   # Python 3.12 + pycryptodome, for /app
+
+
+def _cached(key, build):
+    """build() once per game-data / parser change (data_stamp)."""
+    stamp = data_stamp()
+    hit = _CACHE.get(key)
+    if not hit or hit[0] != stamp:
+        hit = _CACHE[key] = (stamp, build())
+    return hit[1]
+
+
+_CACHE = {}
+
+
+def asset_index():
+    """/assets/index.json: every file /assets/ serves, plus each map's map.json - what the in-browser parser needs
+    to reference maps, models and icons by URL without the files themselves."""
+    def build():
+        files, js = [], {}
+        for d, _sub, names in os.walk(DATA):
+            for n in names:
+                rel = os.path.relpath(os.path.join(d, n), DATA).replace(os.sep, '/')
+                if ASSET_RE.fullmatch('/assets/' + rel):
+                    files.append(rel)
+                elif rel.startswith('maps/') and n == 'map.json':
+                    with open(os.path.join(d, n), encoding='utf-8') as f:
+                        js[rel] = json.load(f)
+        return json.dumps({'files': sorted(files), 'json': js}, separators=(',', ':')).encode()
+    return _cached('index', build)
+
+
+def parser_bundle(version):
+    """/pybundle/<version>.zip: the parser package and the data it reads for that game version, for Pyodide."""
+    vdir = os.path.join(DATA, version)
+    if not os.path.isfile(os.path.join(vdir, 'scripts', 'entities.xml')):
+        return None
+
+    def build():
+        buf = io.BytesIO()
+        with zipfile.ZipFile(buf, 'w', zipfile.ZIP_DEFLATED) as z:
+            for n in sorted(os.listdir(PKG_DIR)):
+                if n.endswith('.py') and n != 'server.py':
+                    z.write(os.path.join(PKG_DIR, n), f'wowsreplay/{n}')
+            for n in ('consumables.json', 'drops.json', 'aircraft.json'):
+                if os.path.isfile(os.path.join(DATA, n)):
+                    z.write(os.path.join(DATA, n), f'wowsreplay/data/{n}')
+            for d, _sub, names in os.walk(vdir):
+                for n in names:
+                    full = os.path.join(d, n)
+                    rel = os.path.relpath(full, vdir).replace(os.sep, '/')
+                    if rel.startswith('scripts/') or rel in ('constants.json', 'ships.json'):
+                        z.write(full, f'wowsreplay/data/{version}/{rel}')
+        return buf.getvalue()
+    return _cached('bundle:' + version, build)
+
+
+def app_page():
+    """/app: the viewer with no battle in it; dropping a .wowsreplay parses it in the browser (nothing uploaded)."""
+    def build():
+        page = render_page(None, three_url=THREE_URL)
+        cfg = json.dumps({'pyodide': PYODIDE_URL, 'bundle': '/pybundle/', 'assets': ASSET_BASE})
+        return page.replace('<head>', f'<head>\n<script>window.WOWS_LOCAL = {cfg};</script>', 1).encode()
+    return _cached('app', build)
+
+
 TYPES = {'.png': 'image/png', '.svg': 'image/svg+xml', '.json': 'application/json', '.i16': 'application/octet-stream',
          '.js': 'text/javascript; charset=utf-8'}
 
@@ -295,6 +363,16 @@ class Handler(BaseHTTPRequestHandler):
             return self._file(p, 'text/html; charset=utf-8', 'private, no-cache')
         if path == THREE_URL:
             return self._file(THREE_JS, TYPES['.js'], 'public, max-age=86400')
+        if path == '/app':
+            return self._send(200, app_page(), 'text/html; charset=utf-8', {'Cache-Control': 'no-cache'})
+        if path == '/assets/index.json':
+            return self._send(200, asset_index(), 'application/json', {'Cache-Control': 'no-cache'})
+        m = re.fullmatch(r'/pybundle/(\d+_\d+_\d+)\.zip', path)
+        if m:
+            body = parser_bundle(m.group(1))
+            if body is None:
+                return self._error(404, f'game version {m.group(1)} is not imported on this server')
+            return self._send(200, body, 'application/zip', {'Cache-Control': 'no-cache'})
         m = ASSET_RE.fullmatch(path)
         if m and '..' not in m.group(1).split('/'):
             full = os.path.realpath(os.path.join(DATA, *m.group(1).split('/')))
@@ -348,6 +426,7 @@ INDEX_HTML = r'''<!doctype html>
   main { max-width: 1000px; margin: 0 auto; padding: 24px 16px 48px; }
   h1 { font-size: 20px; margin: 0 0 4px; }
   .sub { color: var(--muted); margin: 0 0 18px; }
+  .sub a { color: var(--accent); }
   #drop { display: block; border: 2px dashed var(--line); border-radius: 10px; padding: 28px 16px; text-align: center; background: var(--panel);
           cursor: pointer; transition: border-color .15s, background .15s; }
   #drop.over { border-color: var(--accent); background: var(--panel-2); }
@@ -382,7 +461,8 @@ INDEX_HTML = r'''<!doctype html>
 </style></head>
 <body><main>
   <h1>Replay Library</h1>
-  <p class="sub">Drop World of Warships replays to turn them into the 2D / 3D viewer. Processed replays stay listed below.</p>
+  <p class="sub">Drop World of Warships replays to turn them into the 2D / 3D viewer. Processed replays stay listed below.
+    Or <a href="/app">open one in your browser only</a>: parsed on your machine, not uploaded or listed.</p>
   <label id="drop"><input type="file" id="file" accept=".wowsreplay" multiple>
     Drop <b>.wowsreplay</b> files here, or click to choose</label>
   <div id="jobs"></div>

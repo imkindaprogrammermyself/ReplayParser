@@ -12,6 +12,54 @@ THREE_JS = os.path.join(os.path.dirname(__file__), '..', 'viewer', 'vendor', 'th
 MAPS = os.path.join(os.path.dirname(__file__), 'data', 'maps')
 MODELS = os.path.join(os.path.dirname(__file__), 'data', 'models')
 GUI = os.path.join(os.path.dirname(__file__), 'data', 'gui')
+DATA = os.path.join(os.path.dirname(__file__), 'data')
+
+
+class Files:
+    """Which imported files exist - the disk. In the browser (Pyodide) FILES is an IndexFiles instead: the parser's
+    own data is unpacked there, but maps / models / icons stay on the server and are listed in /assets/index.json."""
+    def isfile(self, p):
+        return os.path.isfile(p)
+
+    def isdir(self, p):
+        return os.path.isdir(p)
+
+    def listdir(self, p):
+        return os.listdir(p)
+
+    def read_json(self, p):
+        with open(p, encoding='utf-8') as f:
+            return json.load(f)
+
+
+class IndexFiles(Files):
+    """Real files first, else the server's asset index: {'files': [paths under data/], 'json': {path: content}}."""
+    def __init__(self, index):
+        self.files = set(index.get('files', ()))
+        self.json = index.get('json', {})
+        self.dirs = {}
+        for f in self.files:
+            d, _, name = f.rpartition('/')
+            self.dirs.setdefault(d, []).append(name)
+
+    @staticmethod
+    def rel(p):
+        return os.path.relpath(p, DATA).replace(os.sep, '/')
+
+    def isfile(self, p):
+        return os.path.isfile(p) or self.rel(p) in self.files or self.rel(p) in self.json
+
+    def isdir(self, p):
+        return os.path.isdir(p) or self.rel(p) in self.dirs
+
+    def listdir(self, p):
+        return os.listdir(p) if os.path.isdir(p) else list(self.dirs.get(self.rel(p), ()))
+
+    def read_json(self, p):
+        return super().read_json(p) if os.path.isfile(p) else self.json[self.rel(p)]
+
+
+FILES = Files()
 
 
 def load_class_icons(base=None):
@@ -20,8 +68,8 @@ def load_class_icons(base=None):
     out = {}
     for folder in ('ship_icons', 'ship_icons_self'):
         d = os.path.join(GUI, 'fla', 'minimap', folder)
-        if os.path.isdir(d):
-            for name in sorted(os.listdir(d)):
+        if FILES.isdir(d):
+            for name in sorted(FILES.listdir(d)):
                 if name.endswith('.svg'):
                     if base is not None:   # lazy: URL, the viewer fetches the SVG text to tint it
                         out[name[:-4]] = _ref(os.path.join(d, name), '', base)
@@ -37,9 +85,8 @@ PLANE_ICONS = os.path.join(GUI, 'battle_hud', 'markers_minimap', 'plane')
 def load_plane_icons(planes, base=None):
     """Tag each squadron with its minimap icon (data/aircraft.json) and embed those icons, per side."""
     try:
-        with open(os.path.join(os.path.dirname(__file__), 'data', 'aircraft.json'), encoding='utf-8') as f:
-            kinds = json.load(f)
-    except FileNotFoundError:
+        kinds = FILES.read_json(os.path.join(DATA, 'aircraft.json'))
+    except (FileNotFoundError, KeyError):
         return {}
     out = {}
     for sq in planes:
@@ -48,7 +95,7 @@ def load_plane_icons(planes, base=None):
             continue
         for side in ('ally', 'enemy', 'own'):
             p = os.path.join(PLANE_ICONS, *f'{icon}_{side}.png'.split('/'))
-            if f'{icon}_{side}' not in out and os.path.isfile(p):
+            if f'{icon}_{side}' not in out and FILES.isfile(p):
                 out[f'{icon}_{side}'] = _ref(p, 'image/png', base)
         if f'{icon}_ally' in out:
             sq['icon'] = icon
@@ -62,14 +109,11 @@ def load_icons(ships, base=None):
         icons = {}
         for kind, folder in (('alive', 'ship_icons'), ('dead', 'ship_dead_icons')):
             p = os.path.join(GUI, folder, key.split('_')[0] + '.png')
-            if os.path.isfile(p):
+            if FILES.isfile(p):
                 icons[kind] = _ref(p, 'image/png', base)
         if icons:
             out[key] = icons
     return out
-
-
-DATA = os.path.join(os.path.dirname(__file__), 'data')
 
 
 def _ref(path, mime, base):
@@ -83,7 +127,7 @@ def _ref(path, mime, base):
 def model_urls(ships, base):
     """Lazy pages: where each imported ship model is (fetched by the viewer when 3D opens)."""
     keys = sorted({s['ship'] for s in ships if s.get('ship')})
-    return {k: _ref(os.path.join(MODELS, k + '.json'), '', base) for k in keys if os.path.isfile(os.path.join(MODELS, k + '.json'))}
+    return {k: _ref(os.path.join(MODELS, k + '.json'), '', base) for k in keys if FILES.isfile(os.path.join(MODELS, k + '.json'))}
 
 
 def load_models(ships):
@@ -95,6 +139,8 @@ def load_models(ships):
             with open(p, encoding='utf-8') as f:
                 out[key] = json.load(f)
     return out
+
+
 PLACEHOLDER = '/*__REPLAY_DATA__*/null'
 THREE_PLACEHOLDER = '/*__THREE_JS__*/'
 
@@ -102,16 +148,15 @@ THREE_PLACEHOLDER = '/*__THREE_JS__*/'
 def load_map(name, base=None):
     """Minimap image + heightmap from tools/import_spaces.py, or None if that map wasn't imported."""
     d = os.path.join(MAPS, name or '')
-    if not name or not os.path.isfile(os.path.join(d, 'map.json')):
+    if not name or not FILES.isfile(os.path.join(d, 'map.json')):
         return None
-    with open(os.path.join(d, 'map.json'), encoding='utf-8') as f:
-        m = json.load(f)
+    m = FILES.read_json(os.path.join(d, 'map.json'))
     out = {'name': name, 'minimapBounds': m.get('minimap'), 'terrain': None, 'minimap': None}
     png = os.path.join(d, 'minimap.png')
-    if m.get('minimap') and os.path.isfile(png):
+    if m.get('minimap') and FILES.isfile(png):
         out['minimap'] = _ref(png, 'image/png', base)
     ter = os.path.join(d, 'terrain.i16')
-    if m.get('terrain') and os.path.isfile(ter):
+    if m.get('terrain') and FILES.isfile(ter):
         if base is not None:   # lazy: the viewer fetches the heights when 3D opens
             out['terrain'] = dict(m['terrain'], url=_ref(ter, '', base))
         else:
