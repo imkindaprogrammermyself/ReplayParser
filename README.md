@@ -3,6 +3,14 @@
 Parses World of Warships replays (15.x) and turns them into a self-contained HTML viewer:
 a 2D minimap/timeline and a 3D view with the game's terrain and ship models.
 
+**[Live demo](https://imkindaprogrammermyself.github.io/ReplayParser/)** - one battle, other players anonymised.
+
+![The viewer: 2D minimap with ships, capture zones, spotting and hydro ranges, the ship card, the team roster and the
+event timeline with the score graph](media/viewer-2d.png)
+
+![A video made with python -m wowsreplay.video: the recorded player camera through binoculars and third person, salvos in
+flight, the ship card, team scores and the event bar](media/video-player-camera.gif)
+
 ```
 pip install -r requirements.txt
 python -m wowsreplay my.wowsreplay          # -> out/my.html   (--json t.json to dump the timeline)
@@ -41,10 +49,12 @@ run `game_full.bat "C:\path\to\World_of_Warships"` (needs ~10 GB free), bring ba
 `python tools/update.py import wows_full.zip` - every map, ship model and icon, once per game patch
 (regenerate the .bat with `python tools/update.py full`).
 
-Demo page (`docs/index.html`, for GitHub Pages): `python tools/make_demo.py my.wowsreplay` - one battle as a
-self-contained page (minimap, terrain, ship models and icons embedded; `--no-wg-assets` leaves the Wargaming files out),
-other players renamed 'Ally n' / 'Enemy n', clan tags and chat removed (`--hide-me` hides your name too). It refuses to
-write the page if any original name or account id is still in it.
+Demo page (`docs/`, for GitHub Pages): `python tools/make_demo.py my.wowsreplay` - one battle, split like the library
+pages: `index.html` (~2.5 MB) plus `assets/` and three.js beside it; ship models and terrain load only when 3D opens.
+It needs a web server (Pages, or `python -m http.server -d docs` locally). `--single-file` embeds everything (~10 MB,
+opens from disk), `--no-wg-assets` leaves the Wargaming files out. Other players are renamed 'Ally n' / 'Enemy n', clan
+tags and chat removed (`--hide-me` hides your name too); it refuses to write the page if any original name or account
+id is still in it.
 
 Page links can jump straight to a moment: `out/my.html#t=450&view=3d&cam=follow&dist=26&pitch=1.5`.
 
@@ -53,7 +63,7 @@ recorded player camera, the ship card and HUD, team scores and time left, and th
 Other cameras: `--cam follow` (your ship from a fixed angle), `follow-rotate` (circling your ship), `orbit` (the whole
 map from a fixed angle), `orbit-rotate` (circling the map), `2d` (the minimap); `--rotate 6` degrees per second of
 video, `--dist` km, `--pitch` / `--yaw` degrees to frame them. It starts when the battle does (`--countdown` keeps the ~30 s pre-battle
-countdown, where nothing moves); `--start 2:00 --end 5:30` for a clip (replay time, as the viewer shows it), `--fps`,
+countdown, where nothing moves); `--start 2:00 --end 5:30` for a clip (replay time, as the viewer shows it), `--anonymise` for sharing, `--fps`,
 `--size 1280x720`, `--crf`. The MP4 is written under a temporary name and renamed when done, so runs can't clash.
 Needs Chrome / Chromium and ffmpeg: the viewer runs headless and is rendered frame by frame, WebGL on the GPU when
 Chrome can use it (~19 frames/s on a Radeon 780M, a whole battle at 10x in ~2.5 min; `--no-gpu` = software, ~6
@@ -115,7 +125,8 @@ After a game patch: `plan --refresh`. A new version copies the arena-state key m
 `import` and the tests flag it if the game changed it (as 15.10 did: see `data/15_10_0/constants.json`).
 
 Extracted game files and pages built from them contain Wargaming assets: keep them private
-(`.gitignore` leaves them out).
+(`.gitignore` leaves them out). The one deliberate exception is the demo in `docs/` (and the images in `media/`): it
+publishes one battle's minimap, terrain, ship models and icons, with the other players anonymised.
 
 ## Layout
 
@@ -129,4 +140,8 @@ Extracted game files and pages built from them contain Wargaming assets: keep th
 | `viewer/viewer.html` | the page; three.js r158 is inlined at build time |
 | `wowsreplay/server.py` | web app: library, uploads, /assets/, /trends, /app + /wasm/ for in-browser parsing |
 | `rust/` | the parser + analytics in Rust: WebAssembly for /app, native CLI for the parity test (tools/build_wasm.py) |
+| `wowsreplay/video.py` | replay -> MP4: headless Chrome over the DevTools protocol, frame by frame, piped to ffmpeg |
+| `wowsreplay/privacy.py` | anonymising a battle for sharing (demo page, `video --anonymise`) |
 | `tools/update.py` | plan/import game data; `import_*.py` do the individual steps |
+| `tools/make_demo.py` | the GitHub Pages demo in `docs/` (`index.html` + `assets/`) |
+| `docs/`, `media/` | the published demo and the README images |

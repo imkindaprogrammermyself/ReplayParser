@@ -24,6 +24,7 @@ import urllib.request
 from pathlib import Path
 
 from .__main__ import build_data, render_page
+from .privacy import anonymise as anonymise_data, leaks
 
 CHROMES = ('google-chrome', 'google-chrome-stable', 'chromium', 'chromium-browser', 'chrome')
 CAMS = ('player', 'follow', 'follow-rotate', 'orbit', 'orbit-rotate', '2d')
@@ -185,7 +186,8 @@ def battle_start(clock):
 
 
 def render_video(replay, out, speed=10.0, fps=30, cam='player', start=None, end=None, size=(1920, 1080),
-                 crf=20, chrome=None, no_sandbox=False, quiet=False, countdown=False, gpu=True, encoder='x264', rotate=6.0, dist=None, pitch=None, yaw=None):
+                 crf=20, chrome=None, no_sandbox=False, quiet=False, countdown=False, gpu=True, encoder='x264', rotate=6.0, dist=None, pitch=None, yaw=None,
+                 anonymise=False):
     """cam: see CAMS; *-rotate turn `rotate` degrees per second of video. dist (km), pitch / yaw (degrees) frame the
     orbit / follow cameras (default: whole map for orbit, ~1.1 km behind the ship for follow)."""
     say = (lambda *a: None) if quiet else (lambda *a: print(*a, flush=True))
@@ -196,6 +198,7 @@ def render_video(replay, out, speed=10.0, fps=30, cam='player', start=None, end=
         sys.exit('--size: width and height must be even (H.264, yuv420p)')
     say('parsing replay ...')
     data = build_data(replay)
+    secrets = anonymise_data(data) if anonymise else set()   # other players -> 'Ally 3' / 'Enemy 5'
     if cam != '2d' and not data['models']:
         say('note: no ship models imported for this battle - 3D shows placeholder hulls')
     t_end = data['meta']['end']
@@ -210,7 +213,10 @@ def render_video(replay, out, speed=10.0, fps=30, cam='player', start=None, end=
 
     with tempfile.TemporaryDirectory(prefix='wowsvideo-', ignore_cleanup_errors=True) as tmp:   # Chrome may lag on exit
         page = Path(tmp) / 'page.html'
-        page.write_text(render_page(data), encoding='utf-8')
+        html = render_page(data)
+        if leaks(secrets, html):
+            raise RuntimeError('--anonymise: a player name / id is still in the page')
+        page.write_text(html, encoding='utf-8')
         del data
         hash_ = f'video=1&t={t0}'
         if cam != '2d':
@@ -315,6 +321,7 @@ def main(argv=None):
     ap.add_argument('--crf', type=int, default=20, help='x264 quality, lower = better / bigger (default 20)')
     ap.add_argument('--chrome', help='Chrome / Chromium binary (default: found on PATH)')
     ap.add_argument('--no-sandbox', action='store_true', help="pass --no-sandbox to Chrome (if it won't start)")
+    ap.add_argument('--anonymise', action='store_true', help="other players as 'Ally 3' / 'Enemy 5' (for sharing)")
     ap.add_argument('--no-gpu', action='store_true', help='render WebGL in software (SwiftShader) instead of on the GPU')
     ap.add_argument('--encoder', choices=('x264', 'vaapi'), default='x264',
                     help='x264 = libx264 on the CPU (default), vaapi = the GPU\'s H.264 encoder (AMD / Intel)')
@@ -330,7 +337,7 @@ def main(argv=None):
     try:
         render_video(a.replay, out, a.speed, a.fps, a.cam, parse_time(a.start), parse_time(a.end), size, a.crf,
                      a.chrome, a.no_sandbox, countdown=a.countdown, gpu=not a.no_gpu, encoder=a.encoder,
-                     rotate=a.rotate, dist=a.dist, pitch=a.pitch, yaw=a.yaw)
+                     rotate=a.rotate, dist=a.dist, pitch=a.pitch, yaw=a.yaw, anonymise=a.anonymise)
     except (RuntimeError, ConnectionError) as e:
         sys.exit(f'error: {e}')
 
