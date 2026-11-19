@@ -18,6 +18,7 @@ ENTITY_METHOD = 0x08
 POSITION = 0x0A
 SERVER_TICK = 0x0E           # f64 tick length (1/7 s)
 VERSION = 0x16
+CAMERA_EXTRA = 0x18          # not parsed: 52 B, sent with every CAMERA, always 10 x 0.0 + 3 x -1.0 (15.10 own replays)
 BATTLE_STATS = 0x22          # u32 len + post-battle JSON
 NESTED_PROPERTY = 0x23
 CAMERA = 0x25
@@ -44,3 +45,28 @@ def iter_packets(stream: bytes) -> Iterator[Packet]:
         pos += 12
         yield Packet(time, ptype, stream[pos:pos + size])
         pos += size
+
+
+RAW_MAX_CHANGES = 20000
+
+
+def raw_packets(stream: bytes, types) -> dict:
+    """Debug dump of chosen packet types for the viewer's Raw panel (python -m wowsreplay --raw 0x18).
+    Per type: when every packet arrived, and the payload (hex) only where it differs from the previous one of that
+    type, so a constant packet costs one row. Not part of the timeline (the Rust parser doesn't produce it)."""
+    out = {f'{t:#04x}': {'count': 0, 'sizes': {}, 'times': [], 'changes': [], 'truncated': False} for t in types}
+    last = {}
+    for p in iter_packets(stream):
+        e = out.get(f'{p.type:#04x}')
+        if e is None:
+            continue
+        e['count'] += 1
+        e['sizes'][str(len(p.body))] = e['sizes'].get(str(len(p.body)), 0) + 1
+        e['times'].append(round(p.time, 3))
+        if last.get(p.type) != p.body:
+            last[p.type] = p.body
+            if len(e['changes']) < RAW_MAX_CHANGES:
+                e['changes'].append([round(p.time, 3), p.body.hex()])
+            else:
+                e['truncated'] = True
+    return out

@@ -1,4 +1,4 @@
-"""CLI: python -m wowsreplay REPLAY [-o out.html] [--json out.json]"""
+"""CLI: python -m wowsreplay REPLAY [-o out.html] [--json out.json] [--raw 0x18 ...]"""
 import argparse
 import base64
 import json
@@ -6,6 +6,8 @@ import os
 import sys
 
 from .analytics import analyze
+from .container import read_replay
+from .packets import raw_packets
 from .timeline import build_timeline
 
 VIEWER = os.path.join(os.path.dirname(__file__), '..', 'viewer', 'viewer.html')
@@ -197,9 +199,13 @@ def main(argv=None):
     ap.add_argument('-o', '--html', help='write a self-contained viewer page (default: out/<replay>.html)')
     ap.add_argument('--json', help='also write the timeline JSON here')
     ap.add_argument('--no-map', action='store_true', help="don't embed the imported minimap/terrain/ship models")
+    ap.add_argument('--raw', action='append', default=[], metavar='TYPE', type=lambda s: int(s, 0),
+                    help='debug: add packets of this type (e.g. 0x18, repeatable) to the page\'s Raw panel')
     args = ap.parse_args(argv)
 
     data = build_data(args.replay, embed=not args.no_map)
+    if args.raw:
+        data['raw'] = raw_packets(read_replay(args.replay).stream, args.raw)
     if args.json:
         payload = json.dumps(data, separators=(',', ':'), ensure_ascii=False)
         with open(args.json, 'w', encoding='utf-8') as f:

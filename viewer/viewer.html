@@ -202,6 +202,39 @@
   #llog .m { color: var(--muted); white-space: nowrap; }
   #llog .step .n, #llog .drop .n { color: #93c5fd; }
   #llog .file .n { padding-left: 12px; color: var(--text); }
+  #rawpanel { position: absolute; right: 10px; bottom: 10px; width: min(480px, calc(100% - 20px)); max-height: 70%; z-index: 20;
+    display: flex; flex-direction: column; background: rgba(11, 18, 32, .95); border: 1px solid var(--line); border-radius: 8px;
+    font: 12px/1.45 ui-monospace, SFMono-Regular, Consolas, monospace; }
+  #rawpanel[hidden] { display: none; }
+  #rawpanel .head { display: flex; gap: 10px; align-items: center; padding: 6px 8px 6px 10px; border-bottom: 1px solid var(--line);
+    font-family: system-ui, sans-serif; }
+  #rawpanel .head span { flex: 1; color: var(--muted); font-size: 11px; }
+  #rawclose { padding: 0 7px; line-height: 1.4; }
+  #rawbody { overflow: auto; padding: 6px 10px 8px; }
+  #rawbody .dim { color: var(--muted); }
+  #rawbody table { border-collapse: collapse; width: 100%; margin: 4px 0; }
+  #rawbody th, #rawbody td { padding: 0 6px; text-align: right; white-space: nowrap; }
+  #rawbody th { color: var(--muted); font-weight: 400; }
+  #rawbody tr.var td { color: #fb923c; }
+  #rawbody tr.now td { background: rgba(251, 146, 60, .18); }
+  #rawstrip { display: block; width: 100%; cursor: pointer; margin-top: 4px; }
+  /* &video=1: a frame source for python -m wowsreplay.video - the view, ship card, HUD, team scores, event bar */
+  body.video #app { grid-template-columns: minmax(0, 1fr); }
+  body.video #side, body.video .ctl, body.video #tltip, body.video #maphint, body.video #flyhint, body.video #rawpanel,
+  body.video #logpanel, body.video #summary, body.video #analysis, body.video #heatkey { display: none !important; }
+  body.video #bar { grid-template-columns: minmax(0, 1fr) auto; }
+  body.video #timeline { height: 64px; cursor: default; }
+  #vscore { position: absolute; left: 50%; top: 10px; transform: translateX(-50%); z-index: 6; display: flex; gap: 12px;
+    align-items: center; background: rgba(11, 18, 32, .8); border: 1px solid var(--line); border-radius: 8px; padding: 6px 14px;
+    pointer-events: none; font-variant-numeric: tabular-nums; }
+  #vscore[hidden] { display: none; }
+  #vscore b { font-size: 26px; line-height: 1; min-width: 56px; }
+  #vscore .a { color: var(--ally); text-align: right; } #vscore .e { color: var(--enemy); }
+  #vscore .bar { position: relative; width: 300px; height: 10px; background: var(--panel-2); border-radius: 5px; overflow: hidden; }
+  #vscore .bar i { position: absolute; top: 0; bottom: 0; }
+  #vscore .bar .ba { left: 0; background: var(--ally); } #vscore .bar .be { right: 0; background: var(--enemy); }
+  #vscore .clk { color: var(--muted); font-size: 13px; text-align: center; min-width: 64px; }
+  #vscore .clk span { display: block; color: var(--text); font-size: 17px; }
   #llog .done .n { color: var(--ally); } #llog .err .n { color: var(--enemy); white-space: normal; }
   #logbtn.on { border-color: #60a5fa; }
   .ally { color: var(--ally); } .enemy { color: var(--enemy); } .self { color: var(--self); }
@@ -222,6 +255,8 @@
     <div id="heatkey" hidden></div>
     <div id="xhair" hidden><svg width="120" height="40" viewBox="-60 -20 120 40" fill="none" stroke="#f1f5f9" stroke-width="1.5"><path d="M-56 0H-12M12 0H56M0 -6V-16M0 6V16M-40 -4V4M-24 -3V3M24 -3V3M40 -4V4"/><circle r="2.2" fill="#f1f5f9" stroke="none"/></svg><span id="xrange"></span></div>
     <div id="hud"></div>
+    <div id="vscore" hidden><b class="a" id="vs-a"></b><div class="bar"><i class="ba" id="vb-a"></i><i class="be" id="vb-e"></i></div>
+      <b class="e" id="vs-e"></b><div class="clk"><span id="vs-left"></span>left</div></div>
     <div id="summary" hidden></div>
     <div id="analysis" hidden></div>
     <div id="card"></div>
@@ -233,6 +268,9 @@
     </div></div>
     <div id="logpanel" hidden><div class="head"><b>Load log</b><span id="lsum"></span><button id="lclose" title="Close">×</button></div>
       <ol id="llog"></ol></div>
+    <div id="rawpanel" hidden><div class="head"><b>Raw packets</b><select id="rawtype" title="Packet type"></select>
+      <span id="rawsum"></span><button id="rawclose" title="Close">×</button></div>
+      <div id="rawbody"><div id="rawnow"></div><canvas id="rawstrip" title="Each 32-bit word over the battle (top: packets per second); click to jump"></canvas></div></div>
   </div>
   <aside id="side"></aside>
   <div id="bar">
@@ -246,6 +284,7 @@
       <button id="sumbtn" title="End-of-battle results for every player">Summary</button>
       <button id="anabtn" title="Battle analytics: ship report, momentum, fights, highlights">Analysis</button>
       <button id="logbtn" title="What this page loaded: files, sizes, times, and the parse steps" hidden>Log</button>
+      <button id="rawbtn" title="Debug: raw packets added with python -m wowsreplay --raw TYPE" hidden>Raw</button>
       <select id="cam3d" title="3D camera" hidden>
         <option value="orbit">Orbit</option><option value="follow">Follow ship</option>
         <option value="player">Player camera</option><option value="fly">Fly</option>
@@ -329,13 +368,21 @@ function load(data) {
   prepTorpedoes();
   prepEvents();
   heatReset();
+  rawPrep();
   document.getElementById('drop').classList.remove('show');
   // deep links: #t=450 (moment), &view=3d, &cam=orbit|follow|player|fly, &dist= &pitch= &yaw= (orbit camera),
   // &pos=x,y,z&look=yaw,pitch (fly camera)
   const hash = new URLSearchParams(location.hash.slice(1));
   t = hash.has('t') ? Math.min(D.meta.end, Number(hash.get('t')) || 0) : 0;
+  if (hash.has('video')) { VID.on = true; document.body.classList.add('video'); document.getElementById('vscore').hidden = false; }
+  if (D.raw && hash.has('raw')) {   // &raw=1 opens the Raw panel, &raw=0x1d on that packet type
+    const k = hash.get('raw').toLowerCase();
+    if (rawInfo[k]) rawSel.value = k;
+    showRaw(true);
+  }
   buildSide(); resize(); draw();
-  if (hash.get('view') === '3d') setMode3D(true).then(() => {
+  if (hash.get('view') !== '3d') { VID.resolve(); return; }
+  setMode3D(true).then(() => {
     if (hash.has('cam')) setCamMode(hash.get('cam'));
     for (const k of ['dist', 'pitch', 'yaw']) if (hash.has(k)) orbit[k] = Number(hash.get(k)) || orbit[k];   // &dist=12&pitch=.6&yaw=1
     if (V3.mode === 'fly') {
@@ -343,7 +390,37 @@ function load(data) {
       if (pos.length === 3 && pos.every(Number.isFinite)) fly.pos = { x: pos[0], y: pos[1], z: -pos[2] };   // map x, height, map z
       if (look.length === 2 && look.every(Number.isFinite)) [fly.yaw, fly.pitch] = look;
     }
+    VID.rot = Number(hash.get('rot')) || 0;   // &rot=6: orbit / follow camera turns 6 deg per second of video
+    VID.yaw0 = orbit.yaw;
+    VID.resolve();
   });
+}
+
+// ------------------------------------------------------------------ video frames (python -m wowsreplay.video)
+// &video=1 makes the page a frame source: no side panel or controls, team scores over the view, no animation loops.
+// The tool waits for window.VIDEO_READY (data and 3D assets loaded), then per frame calls VIDEO.frame(t, ms) - the
+// battle time, and the video time that drives the cosmetic animations (fire flicker, flood pulse) - and screenshots.
+const VID = { on: false, ms: 0, rot: 0, yaw0: 0 };
+window.VIDEO_READY = new Promise(res => { VID.resolve = () => res(true); });
+const wallNow = () => VID.on ? VID.ms : performance.now();
+window.VIDEO = {
+  frame(t0, ms) {
+    t = Math.max(0, Math.min(D.meta.end, t0));
+    VID.ms = ms;
+    if (VID.rot) orbit.yaw = VID.yaw0 + VID.rot * Math.PI / 180 * ms / 1000;
+    draw();
+    if (V3.active) v3Frame();
+    return t;
+  },
+};
+function updateVScore() {
+  const sc = valAt(D.score, t, [0, 0, 0]), own = D.meta.ownTeam, win = D.meta.winScore || 1000;
+  const a = sc[1 + own], e = sc[2 - own], clk = valAt(D.clock, t, null);
+  document.getElementById('vs-a').textContent = a;
+  document.getElementById('vs-e').textContent = e;
+  document.getElementById('vb-a').style.width = `${Math.min(50, a / win * 50)}%`;
+  document.getElementById('vb-e').style.width = `${Math.min(50, e / win * 50)}%`;
+  document.getElementById('vs-left').textContent = clk ? fmt(Math.max(0, clk[1] - (t - clk[0]))) : '-';
 }
 
 // ------------------------------------------------------------------ map canvas
@@ -480,6 +557,8 @@ function draw() {
   drawTimeline();
   updateSide();
   updateCard();
+  updateRaw();
+  if (VID.on) updateVScore();
 }
 
 // heatmaps: each layer is a list of weighted samples per HEAT_STEP s, binned on a grid over the map; the grid sums the
@@ -1469,6 +1548,109 @@ function moduleState(id) {   // type -> {out: n, destroyed: n}
   }
   return out;
 }
+// ------------------------------------------------------------------ raw packets (debug)
+// D.raw (python -m wowsreplay REPLAY --raw 0x18): per packet type {count, sizes, times [t], changes [[t, hex]]}, where
+// changes holds the payload only when it differs from the previous packet of that type. The panel shows the payload at
+// the playhead as little-endian 32-bit words (hex / i32 / f32), which words ever change (orange), and a strip with one
+// row per word over the whole battle under a packets-per-second row, next to the CAMERA packet for comparison.
+const rawPanel = document.getElementById('rawpanel'), rawBtn = document.getElementById('rawbtn');
+const rawSel = document.getElementById('rawtype'), rawStrip = document.getElementById('rawstrip');
+let rawInfo = {};
+function rawPrep() {
+  rawInfo = {};
+  rawSel.innerHTML = '';
+  for (const [k, e] of Object.entries(D.raw || {})) {
+    const rows = e.changes.map(([t0, hex]) => {
+      const bytes = (hex.match(/../g) || []).map(h => parseInt(h, 16));   // last word zero-padded (a 1-byte flag = word 0)
+      const b = new Uint8Array(Math.ceil(bytes.length / 4) * 4), dv = new DataView(b.buffer), w = [];
+      b.set(bytes);
+      for (let i = 0; i < b.length; i += 4) w.push({ u: dv.getUint32(i, true), i: dv.getInt32(i, true), f: dv.getFloat32(i, true) });
+      return { t: t0, w, padded: bytes.length % 4 !== 0 };
+    });
+    const n = Math.max(0, ...rows.map(r => r.w.length)), varying = [];
+    for (let i = 0; i < n; i++) varying.push(rows.some(r => !r.w[i] || r.w[i].u !== (rows[0].w[i] || {}).u));
+    // a word is drawn as float when every value is a sane float, else as int
+    const asFloat = [...Array(n).keys()].map(i => rows.every(r => !r.w[i] || r.w[i].u === 0 ||
+      (Number.isFinite(r.w[i].f) && Math.abs(r.w[i].f) > 1e-20 && Math.abs(r.w[i].f) < 1e7)));
+    rawInfo[k] = { e, rows, n, varying, asFloat };
+    rawSel.add(new Option(`${k} (${e.count})`, k));
+  }
+  rawBtn.hidden = !D.raw;
+  rawSel.hidden = rawSel.options.length < 2;
+  if (!D.raw) showRaw(false);
+}
+function showRaw(on) { rawPanel.hidden = !on; rawBtn.classList.toggle('on', on); if (on) updateRaw(); }
+rawBtn.addEventListener('click', () => showRaw(rawPanel.hidden));
+document.getElementById('rawclose').addEventListener('click', () => showRaw(false));
+rawSel.addEventListener('change', () => updateRaw());
+function lastAt(arr, t0, key) {   // last index with arr[i] (or arr[i][key]) <= t0, or -1
+  let lo = 0, hi = arr.length - 1, res = -1;
+  while (lo <= hi) { const m = (lo + hi) >> 1; if ((key ? arr[m][key] : arr[m]) <= t0) { res = m; lo = m + 1; } else hi = m - 1; }
+  return res;
+}
+const rawNum = v => v === 0 ? '0' : Math.abs(v) >= 1e6 || Math.abs(v) < 1e-3 ? v.toExponential(3) : String(+v.toPrecision(6));
+function updateRaw() {
+  if (rawPanel.hidden || !D || !rawInfo[rawSel.value]) return;
+  const R = rawInfo[rawSel.value], { e, rows, n, varying, asFloat } = R;
+  const nVar = varying.filter(Boolean).length;
+  document.getElementById('rawsum').textContent = `${e.count} packets · ${Object.entries(e.sizes).map(([s, c]) => `${s} B${Object.keys(e.sizes).length > 1 ? ' ×' + c : ''}`).join(', ')}` +
+    ` · ${rows.length}${e.truncated ? '+' : ''} distinct payload${rows.length === 1 ? '' : 's'} in a row · ${nVar ? `${nVar} of ${n} words change` : 'never changes'}`;
+  const pi = lastAt(e.times, t), ci = lastAt(rows, t, 't'), row = rows[Math.max(0, ci)];
+  const recent = pi < 0 ? 0 : e.times.slice(Math.max(0, pi - 200), pi + 1).filter(x => x > t - 1).length;
+  let h = `<div class="dim">${pi < 0 ? 'no packet yet' : `packet #${pi + 1} at ${e.times[pi].toFixed(3)} s (${(t - e.times[pi]).toFixed(2)} s ago, ${recent}/s)` +
+    ` · payload since ${row.t.toFixed(3)} s${ci > 0 ? ` (change ${ci} of ${rows.length - 1})` : ' (the first one)'}`}</div>`;
+  h += '<table><tr><th>#</th><th>off</th><th>hex</th><th>i32</th><th>f32</th><th></th></tr>';
+  for (let i = 0; i < n; i++) {
+    const w = row && row.w[i], ch = ci > 0 && rows[ci - 1].w[i] && w && rows[ci - 1].w[i].u !== w.u && t - row.t < 1;
+    h += `<tr class="${varying[i] ? 'var' : ''}${ch ? ' now' : ''}"><td>${i}</td><td>${i * 4}</td>` +
+      `<td>${w ? w.u.toString(16).padStart(8, '0') : '-'}</td><td>${w ? w.i : '-'}</td><td>${w ? rawNum(w.f) : '-'}</td>` +
+      `<td class="dim">${varying[i] ? 'changes' : 'const'}</td></tr>`;
+  }
+  h += '</table>';
+  if (row && row.padded) h += `<div class="dim">payload isn't a whole number of words: the last one is zero-padded</div>`;
+  const c = valAt(D.camera, t, null);
+  if (c) h += `<div class="dim">CAMERA 0x25 at ${c[0].toFixed(2)} s: pos ${c[1].toFixed(1)}, ${c[2].toFixed(1)}, ${c[3].toFixed(1)} · ` +
+    `dir ${c[4]}, ${c[5]}, ${c[6]} · fov ${c[7]}</div>`;
+  document.getElementById('rawnow').innerHTML = h;
+  drawRawStrip(R);
+}
+function drawRawStrip(R) {
+  const { e, rows, n, varying, asFloat } = R, end = D.meta.end || 1, dpr = window.devicePixelRatio || 1;
+  const W = rawStrip.clientWidth || 400, RH = 9, TOP = 16, H = TOP + n * RH + 2;
+  rawStrip.style.height = H + 'px';
+  if (rawStrip.width !== Math.round(W * dpr) || rawStrip.height !== Math.round(H * dpr)) {
+    rawStrip.width = Math.round(W * dpr); rawStrip.height = Math.round(H * dpr);
+  }
+  const ctx = rawStrip.getContext('2d'), X = tt => tt / end * W;
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  ctx.clearRect(0, 0, W, H);
+  ctx.fillStyle = css('--panel-2'); ctx.fillRect(0, 0, W, H);
+  const bins = new Array(Math.ceil(W)).fill(0);   // packets per second, per pixel column
+  for (const tt of e.times) bins[Math.min(bins.length - 1, Math.floor(X(tt)))]++;
+  const secPerPx = end / W, peak = Math.max(1, ...bins.map(b => b / secPerPx));
+  ctx.fillStyle = '#60a5fa';
+  bins.forEach((b, x) => { const v = b / secPerPx / peak * (TOP - 4); if (v) ctx.fillRect(x, TOP - 2 - v, 1, v); });
+  for (let i = 0; i < n; i++) {
+    const y0 = TOP + i * RH, val = r => r.w[i] ? (asFloat[i] ? r.w[i].f : r.w[i].i) : 0;
+    ctx.strokeStyle = varying[i] ? '#fb923c' : 'rgba(131, 148, 180, .55)'; ctx.lineWidth = 1;
+    const vs = rows.map(val), lo = Math.min(...vs), hi = Math.max(...vs), Y = v => hi > lo ? y0 + RH - 2 - (v - lo) / (hi - lo) * (RH - 3) : y0 + RH / 2;
+    ctx.beginPath();
+    rows.forEach((r, k) => {   // step line: each payload holds until the next change
+      const x = X(r.t), y = Y(vs[k]);
+      if (k) ctx.lineTo(x, Y(vs[k - 1])); else ctx.moveTo(x, y);
+      ctx.lineTo(x, y);
+    });
+    if (rows.length) ctx.lineTo(X(e.times[e.times.length - 1]), Y(vs[vs.length - 1]));
+    ctx.stroke();
+  }
+  ctx.fillStyle = '#fff'; ctx.fillRect(X(t) - 1, 0, 2, H);
+}
+rawStrip.addEventListener('click', ev => {
+  const r = rawStrip.getBoundingClientRect();
+  t = Math.max(0, Math.min(D.meta.end, (ev.clientX - r.left) / r.width * D.meta.end));
+  draw();
+});
+
 function updateCard() {
   const el = document.getElementById('card');
   const s = byId[selectedId] || ships.find(x => x.relation === 'self');
@@ -2239,7 +2421,7 @@ function v3Aim() {   // aim marker for the selected ship + the Player-camera cro
   const on = V3.mode === 'player' && c && t - c[0] < 2;
   xh.hidden = !on;
   if (on) {
-    const now = performance.now();
+    const now = wallNow();
     if (!V3.xhairAt || now - V3.xhairAt > 120) { V3.xhairAt = now; document.getElementById('xrange').textContent = crosshairText(c); }
   }
 }
@@ -2292,7 +2474,7 @@ function v3Update() {
     o.g.position.set(st.x, y, -st.z);
     o.g.rotation.set(0, -st.yaw, list);
     if (o.turrets && o.turrets.length && !st.dead) v3AimTurrets(o, st, scale);
-    const burning = opts.fires && !st.dead && !st.ghost ? burnFlags(s.id) & 0xf : 0, now = performance.now();
+    const burning = opts.fires && !st.dead && !st.ghost ? burnFlags(s.id) & 0xf : 0, now = wallNow();
     o.fires.forEach((f, i) => {
       f.visible = !!(burning >> i & 1);
       if (f.visible) {   // flicker, out of phase per node
@@ -2302,7 +2484,7 @@ function v3Update() {
     });
     const nFlood = opts.floods && !st.dead && !st.ghost ? floodCount(s.id) : 0;
     o.flood.visible = nFlood > 0;   // pulsing ring around the hull, wider with two floods
-    if (nFlood) o.flood.scale.setScalar(o.L * (.45 + .15 * nFlood) * (1 + .08 * Math.sin(performance.now() / 160)));
+    if (nFlood) o.flood.scale.setScalar(o.L * (.45 + .15 * nFlood) * (1 + .08 * Math.sin(wallNow() / 160)));
     const col = st.dead ? V3.dead : o.base;
     o.hullMat.color.copy(col); o.topMat.color.copy(col).lerp(V3.dark, .45);
     o.hullMat.opacity = o.topMat.opacity = st.ghost ? .25 : 1;
@@ -2541,7 +2723,11 @@ function v3Controls(canvas) {
 }
 
 function v3Loop() {
-  if (!V3.active) return;
+  if (!V3.active || VID.on) return;   // video frames are rendered by VIDEO.frame
+  v3Frame();
+  requestAnimationFrame(v3Loop);
+}
+function v3Frame() {
   const r = document.getElementById('gl').getBoundingClientRect();
   if (r.width !== V3.w || r.height !== V3.h) {
     V3.w = r.width; V3.h = r.height;
@@ -2551,7 +2737,6 @@ function v3Loop() {
   v3Camera();
   v3Update();
   V3.renderer.render(V3.scene, V3.camera);
-  requestAnimationFrame(v3Loop);
 }
 
 const modeBtn = document.getElementById('mode'), cam3d = document.getElementById('cam3d'), scale3d = document.getElementById('scale3d');

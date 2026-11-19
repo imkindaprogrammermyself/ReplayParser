@@ -41,7 +41,24 @@ run `game_full.bat "C:\path\to\World_of_Warships"` (needs ~10 GB free), bring ba
 `python tools/update.py import wows_full.zip` - every map, ship model and icon, once per game patch
 (regenerate the .bat with `python tools/update.py full`).
 
+Demo page (`docs/index.html`, for GitHub Pages): `python tools/make_demo.py my.wowsreplay` - one battle with no
+Wargaming files (no minimap image, terrain, ship models or game icons; 3D draws placeholder hulls), other players
+renamed 'Ally n' / 'Enemy n', clan tags and chat removed (`--hide-me` hides your name too). It refuses to write the page
+if any original name or account id is still in it.
+
 Page links can jump straight to a moment: `out/my.html#t=450&view=3d&cam=follow&dist=26&pitch=1.5`.
+
+Video: `python -m wowsreplay.video my.wowsreplay --speed 10` -> `out/my.mp4` (1080p30 H.264): the 3D view through the
+recorded player camera, the ship card and HUD, team scores and time left, and the event bar with the score graph.
+Other cameras: `--cam follow` (your ship from a fixed angle), `follow-rotate` (circling your ship), `orbit` (the whole
+map from a fixed angle), `orbit-rotate` (circling the map), `2d` (the minimap); `--rotate 6` degrees per second of
+video, `--dist` km, `--pitch` / `--yaw` degrees to frame them. It starts when the battle does (`--countdown` keeps the ~30 s pre-battle
+countdown, where nothing moves); `--start 2:00 --end 5:30` for a clip (replay time, as the viewer shows it), `--fps`,
+`--size 1280x720`, `--crf`. The MP4 is written under a temporary name and renamed when done, so runs can't clash.
+Needs Chrome / Chromium and ffmpeg: the viewer runs headless and is rendered frame by frame, WebGL on the GPU when
+Chrome can use it (~19 frames/s on a Radeon 780M, a whole battle at 10x in ~2.5 min; `--no-gpu` = software, ~6
+frames/s); the video is smooth however slow the machine is. `--encoder vaapi` encodes on the GPU (AMD / Intel) - no
+faster here, where the screenshots are the bottleneck, but it frees the CPU; x264 makes smaller files at equal quality.
 
 2D map: mouse wheel zooms, drag pans, double-click shows the whole map. Click a ship (on the map, in 3D or its
 roster row) to follow it in both views; Esc goes back to your own ship.

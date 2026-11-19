@@ -30,7 +30,8 @@ web app (library, lazy pages, /trends), battle analytics (ship report, momentum,
 heatmap layers, /app with the Rust/WASM parser (~0.5 s per replay, nothing from a CDN).
 Open / offered, not done: retire the Python parser (server via the Rust CLI or PyO3); production hardening
 (reverse proxy, public /app-only mode, auth, rate limits, storage quota); Operations (Building entities, tasks);
-local weather; clip export; pings / spotting in 3D. Unconfirmed: Vermont's 'auxTorpBooster' label ('Torpedo boost').
+local weather; pings / spotting in 3D. Video export: wowsreplay/video.py (headless Chrome over CDP, stdlib
+WebSocket, viewer #video=1 + window.VIDEO.frame, ffmpeg) - Python pages only, not in /app. Unconfirmed: Vermont's 'auxTorpBooster' label ('Torpedo boost').
 
 ## Findings worth keeping
 - burningFlags bits 0-3 = fire nodes (bow -> stern, GameParams hull fire1..fire4), bits 4-5 flood nodes.
@@ -45,3 +46,6 @@ local weather; clip export; pings / spotting in 3D. Unconfirmed: Vermont's 'auxT
 - Damage rows arrive ~0.5-0.7 s after the shell lands; ~55-70 % of own shells report where they ended (hits almost
   always), so accuracy = hits / shells fired. Arms Race HP pickups push health above maxHealth.
 - Heading = (sin yaw, cos yaw), +z north.
+- Packet 0x18: 52 B, one per CAMERA (0x25), constant 10 x 0.0 + 3 x -1.0 all battle (2 replays, 15.10) - ignore.
+  0x1D: one i32 per camera frame, changes in +-256 steps (two packed bytes?), not own targetLocalPos - unknown.
+  `python -m wowsreplay REPLAY --raw 0x18` adds a Raw panel to the page for looking at any packet type.
