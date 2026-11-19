@@ -14,6 +14,8 @@ and a Rust port of the parser compiled to WebAssembly (rust/) for in-browser par
   tests/test_rust.py requires byte-for-byte equal output on every replay. Python round() == Rust format-then-parse.
 - Untrusted input: replays are parsed with a restricted unpickler (no plain pickle, ever); upload / stream size caps.
 - Keep Wargaming assets private (pages embed minimaps / models); the server has no login, local use by default.
+  Exception, the user's call (2026-11-20): docs/index.html (GitHub Pages demo, tools/make_demo.py) embeds them;
+  players stay anonymised there.
 - Commit messages end with the Co-Authored-By line; commit only when asked.
 
 ## Moving to a new machine (Fedora from 2026-11-17)

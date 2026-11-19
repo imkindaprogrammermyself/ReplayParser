@@ -2,10 +2,11 @@
 
     python tools/make_demo.py REPLAY [-o docs/index.html]
 
-The viewer with the battle's timeline only. No Wargaming files: no minimap image, terrain, ship models or game icons
-(the 2D map draws the grid and shapes, 3D draws placeholder hulls). Other players are anonymised: names become
-'Ally 3' / 'Enemy 5', clan tags and the chat (it carries account ids) are dropped. Your own name stays (--hide-me
-replaces it with 'You'). The page is checked afterwards: it must not contain any original name, clan tag or account id.
+The self-contained viewer page (minimap, terrain, ship models and icons embedded, like python -m wowsreplay;
+--no-wg-assets leaves the Wargaming files out: grid-only 2D map, placeholder hulls in 3D). Other players are
+anonymised: names become 'Ally 3' / 'Enemy 5', clan tags and the chat (it carries account ids) are dropped. Your own
+name stays (--hide-me replaces it with 'You'). The page is checked afterwards: it must not contain any original name,
+clan tag or account id.
 """
 import argparse
 import json
@@ -47,10 +48,13 @@ def main(argv=None):
     ap.add_argument('replay', help='.wowsreplay file')
     ap.add_argument('-o', '--out', default=os.path.join(ROOT, 'docs', 'index.html'), help='default: docs/index.html')
     ap.add_argument('--hide-me', action='store_true', help="replace your own name with 'You' too")
+    ap.add_argument('--no-wg-assets', action='store_true',
+                    help='leave out the Wargaming files (minimap, terrain, ship models, icons)')
     a = ap.parse_args(argv)
 
-    data = build_data(a.replay, embed=False)    # timeline + analytics, no map / models / icons
-    assert not (data['map'] or data['models'] or data['icons'] or data['classIcons'] or data['planeIcons'])
+    data = build_data(a.replay, embed=not a.no_wg_assets)
+    if a.no_wg_assets:
+        assert not (data['map'] or data['models'] or data['icons'] or data['classIcons'] or data['planeIcons'])
     secrets = anonymise(data, a.hide_me)
     page = render_page(data)                    # three.js (MIT) inlined, so 3D works offline too
     found = sorted(x for x in secrets if json.dumps(x)[1:-1] in page)
@@ -61,7 +65,8 @@ def main(argv=None):
         f.write(page)
     m = data['meta']
     print(f'{a.out}: {len(page) / 1048576:.1f} MB | {m["map"]} | {m["gameType"]} | {len(data["ships"])} ships, '
-          f'{len(secrets)} names / ids removed')
+          f'{len(secrets)} names / ids removed | map: {"yes" if data["map"] else "no"}, ship models: '
+          f'{len(data["models"])} of {len({s["ship"] for s in data["ships"]})} types')
 
 
 if __name__ == '__main__':

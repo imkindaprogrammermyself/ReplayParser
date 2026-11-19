@@ -41,10 +41,10 @@ run `game_full.bat "C:\path\to\World_of_Warships"` (needs ~10 GB free), bring ba
 `python tools/update.py import wows_full.zip` - every map, ship model and icon, once per game patch
 (regenerate the .bat with `python tools/update.py full`).
 
-Demo page (`docs/index.html`, for GitHub Pages): `python tools/make_demo.py my.wowsreplay` - one battle with no
-Wargaming files (no minimap image, terrain, ship models or game icons; 3D draws placeholder hulls), other players
-renamed 'Ally n' / 'Enemy n', clan tags and chat removed (`--hide-me` hides your name too). It refuses to write the page
-if any original name or account id is still in it.
+Demo page (`docs/index.html`, for GitHub Pages): `python tools/make_demo.py my.wowsreplay` - one battle as a
+self-contained page (minimap, terrain, ship models and icons embedded; `--no-wg-assets` leaves the Wargaming files out),
+other players renamed 'Ally n' / 'Enemy n', clan tags and chat removed (`--hide-me` hides your name too). It refuses to
+write the page if any original name or account id is still in it.
 
 Page links can jump straight to a moment: `out/my.html#t=450&view=3d&cam=follow&dist=26&pitch=1.5`.
 
